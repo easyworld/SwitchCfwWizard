@@ -132,6 +132,7 @@ internal static class Program
         // 2026-09-16 七项功能改动对应的护栏。
         // 放在 CheckFullScenario 之后：CheckPayloadBinFallback 结束时要用 _fullOptions 把 out/ 还原。
         CheckBootEntryTitles();
+        CheckBootEntryIds();
         CheckBootLogo();
         // 引导项图标（icon）：与启动图共用一套复制/去重逻辑，重点测共用状态才有的问题
         CheckBootIcon();
@@ -6056,6 +6057,139 @@ internal static class Program
                 File.WriteAllText(path, backup);
             }
         }
+    }
+
+    /// <summary>
+    /// 引导项 id 可配置（用户 2026-11-19：「在全局选项-引导进入系统-正版系统/真实破解系统/虚拟破解系统下
+    /// 新增配置项：id」）。
+    ///
+    /// 三层判据：① 纯函数穷举（留空 / 合法 / 超长 / 非法字符）；
+    /// ② 自定义值真的进 <c>hekate_ipl.ini</c>；③ **全量不变量**：生成结果里任何一行
+    /// <c>id=</c> 都不超过 7 个字符（hekate 内部是 <c>char id[8]</c>，超出的会被静默截断）。
+    /// </summary>
+    private static void CheckBootEntryIds()
+    {
+        Section("引导项 id：可配置、留空用默认、超过 7 字符绝不写进文件");
+
+        var loc = LocalizationService.Instance;
+        loc.SetLanguage("zh-Hans");
+
+        // ① 纯函数 —— 解析规则只有一处（ComponentCatalog.ResolveBootId），界面与生成器共用
+        Assert(ComponentCatalog.MaxBootIdLength == 7,
+            "hekate 的 id 上限是 7 个字符（内部 char id[8] 要留一位给结束符），这个常量不该被改");
+        Assert(ComponentCatalog.ResolveBootId(null, "def") == "def", "id 留空应回落到内置默认");
+        Assert(ComponentCatalog.ResolveBootId("   ", "def") == "def", "id 全空白也应回落到内置默认");
+        Assert(ComponentCatalog.ResolveBootId("  abc  ", "def") == "abc", "自定义 id 应去掉首尾空白");
+        Assert(ComponentCatalog.ResolveBootId("a_1-B9", "def") == "a_1-B9", "字母/数字/下划线/短横线都应允许");
+        Assert(ComponentCatalog.ResolveBootId("abcdefg", "def") == "abcdefg", "7 个字符正好是上限、应允许");
+        Assert(ComponentCatalog.ResolveBootId("abcdefgh", "def") == "def",
+            "8 个字符应回落：绝不写一个会被 hekate 静默截断的值");
+        Assert(ComponentCatalog.ResolveBootId("a b", "def") == "def", "含空格的 id 应回落（会把 ini 的 id= 行拆坏）");
+        Assert(ComponentCatalog.ResolveBootId("a=b", "def") == "def", "含 = 的 id 应回落（hekate 会当成另一个键）");
+        Assert(ComponentCatalog.ResolveBootId("中文", "def") == "def", "非 ASCII 的 id 应回落");
+        Assert(!ComponentCatalog.IsValidBootId(string.Empty), "留空不算「合法的自定义值」");
+
+        static WizardOptions WithBootIds(string stock, string sysNand, string emuNand)
+        {
+            var options = new WizardOptions
+            {
+                Atmosphere = true,
+                Hekate = true,
+                BootStock = true,
+                BootSysNand = true,
+                BootEmuNand = true,
+                BootStockId = stock,
+                BootSysNandId = sysNand,
+                BootEmuNandId = emuNand,
+                IncludeComponentFilesInOutput = false,
+                IncludePayloads = false,
+                IncludeBootDat = false,
+            };
+            ApplyCatalogDefaults(options);
+            return options;
+        }
+
+        // ② 自定义值原样写进 ini（只去首尾空白）
+        Generate(WithBootIds("mine1", "  mine_2  ", "M3-4"));
+        var hekate = ReadOrEmpty("bootloader/hekate_ipl.ini");
+
+        foreach (var (title, expected) in new[]
+                 {
+                     (StockTitle, "id=mine1"),
+                     (SysNandTitle, "id=mine_2"),
+                     (EmuNandTitle, "id=M3-4"),
+                 })
+        {
+            Assert(ReadSection(hekate, title).Contains(expected),
+                $"段 [{title}] 应写入自定义 {expected}（实际：{Describe(ReadSection(hekate, title))}）");
+        }
+
+        Assert(!hekate.Contains("id=  mine_2"), "首尾空白不该被写进 ini");
+
+        // ③ 不合法的值：回落 + 告警（「回落必须说出来」—— 静默回落与不回落一样糟）
+        var sink = new CapturingSink();
+        new ConfigGenerator(sink).Generate(WithBootIds("toolong99", "", ""), CancellationToken.None);
+
+        var fellBack = ReadOrEmpty("bootloader/hekate_ipl.ini");
+        Assert(ReadSection(fellBack, StockTitle).Contains("id=" + ComponentCatalog.DefaultBootIdStock),
+            $"超长的 id 应回落到内置默认 {ComponentCatalog.DefaultBootIdStock}");
+        Assert(!fellBack.Contains("toolong99"), "超长的值绝不能出现在 ini 里");
+        Assert(sink.Warnings.Any(w => w.Contains("toolong99")),
+            $"回落必须写进日志并点名用户填的那个值，实际告警：{string.Join(" / ", sink.Warnings)}");
+
+        // ④ 全量不变量：任何一行 id= 都不超过 7 个字符
+        var idLines = fellBack.Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.StartsWith("id=", StringComparison.Ordinal))
+            .ToList();
+
+        Assert(idLines.Count > 0, "生成的 hekate_ipl.ini 里应至少有一行 id=");
+        foreach (var line in idLines)
+        {
+            Assert(line.Length - 3 <= ComponentCatalog.MaxBootIdLength,
+                $"生成的 id 不该超过 {ComponentCatalog.MaxBootIdLength} 个字符：{line}");
+        }
+
+        // ⑤ 存档往返：界面读得回、也判得对
+        var settingsPath = SettingsStore.FilePath;
+        var backup = File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null;
+
+        try
+        {
+            File.WriteAllText(settingsPath,
+                "{ \"BootStockId\": \"cfg1\", \"BootSysNandId\": \"cfg_2\", \"BootEmuNandId\": \"cfg-3\" }");
+
+            var vm = new MainViewModel();
+            Assert(vm.BootStockId == "cfg1" && vm.BootSysNandId == "cfg_2" && vm.BootEmuNandId == "cfg-3",
+                $"界面应读回存档里的三个 id，实际：{vm.BootStockId}/{vm.BootSysNandId}/{vm.BootEmuNandId}");
+            Assert(!vm.BootStockIdIsInvalid && !vm.BootSysNandIdIsInvalid && !vm.BootEmuNandIdIsInvalid,
+                "合法的 id 不该被判为不合法");
+
+            vm.BootStockId = "bad one";
+            Assert(vm.BootStockIdIsInvalid, "含空格的 id 应被判为不合法（界面红字靠它驱动）");
+
+            vm.BootStockId = "12345678";
+            Assert(vm.BootStockIdIsInvalid, "8 个字符的 id 应被判为不合法");
+
+            vm.BootStockId = "ok";
+            Assert(!vm.BootStockIdIsInvalid, "改回合法值之后不该继续红着");
+        }
+        finally
+        {
+            if (backup is null)
+            {
+                if (File.Exists(settingsPath))
+                {
+                    File.Delete(settingsPath);
+                }
+            }
+            else
+            {
+                File.WriteAllText(settingsPath, backup);
+            }
+        }
+
+        loc.SetLanguage("zh-Hans");
     }
 
     /// <summary>⑤ hekate 启动图（logopath）。</summary>

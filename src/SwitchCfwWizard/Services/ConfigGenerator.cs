@@ -654,7 +654,7 @@ public sealed class ConfigGenerator
 
             AppendBootImage(options.BootStockLogo, BootImageKind.Logo, "zsxt", title, lines, stagedImages, outRoot, result);
             AppendBootImage(options.BootStockIcon, BootImageKind.Icon, "zsxt", title, lines, stagedImages, outRoot, result);
-            lines.Add("id=zsxt");
+            lines.Add("id=" + ResolveBootIdFor(options.BootStockId, ComponentCatalog.DefaultBootIdStock, title));
 
             entries.Add(new BootEntry(title, lines, "{------ Stock / OFW ------}"));
         }
@@ -681,7 +681,7 @@ public sealed class ConfigGenerator
 
             AppendBootImage(options.BootSysNandLogo, BootImageKind.Logo, "zspjxt", title, lines, stagedImages, outRoot, result);
             AppendBootImage(options.BootSysNandIcon, BootImageKind.Icon, "zspjxt", title, lines, stagedImages, outRoot, result);
-            lines.Add("id=zspjxt");
+            lines.Add("id=" + ResolveBootIdFor(options.BootSysNandId, ComponentCatalog.DefaultBootIdSysNand, title));
 
             entries.Add(new BootEntry(title, lines, "{------ Atmosphere ------}"));
         }
@@ -707,16 +707,42 @@ public sealed class ConfigGenerator
             AppendBootImage(options.BootEmuNandLogo, BootImageKind.Logo, "xunipjx", title, lines, stagedImages, outRoot, result);
             AppendBootImage(options.BootEmuNandIcon, BootImageKind.Icon, "xunipjx", title, lines, stagedImages, outRoot, result);
 
-            // id 上限是 7 个字符：hekate 内部按 char id[8] 存放，要留一个 NULL 终止符
-            // （官方 README：id=IDNAME … Max 7 chars）。
-            // 用户配置里写的 xunipjxt 是 8 个字符，实际生效的只有前 7 位，
-            // 所以这里直接生成 7 字符版本，避免写进去一个「看起来对、其实被截断」的值。
-            lines.Add("id=xunipjx");
+            // id 可以用户自定义（2026-11-19）；7 字符上限的由来见
+            // ComponentCatalog.MaxBootIdLength / DefaultBootIdEmuNand 的注释。
+            lines.Add("id=" + ResolveBootIdFor(options.BootEmuNandId, ComponentCatalog.DefaultBootIdEmuNand, title));
 
             entries.Add(new BootEntry(title, lines, "{------ Atmosphere ------}"));
         }
 
         return entries;
+    }
+
+    /// <summary>
+    /// 把用户填的 id 落成要写进 ini 的那一串：能用就用（去空白），不能用就回落到内置默认
+    /// **并告警**。
+    ///
+    /// 为什么不「截断到 7 位再写」：那会写出一个既不是用户输入、又不是默认的第三个值，
+    /// 而文件里看着还挺正常 —— 用户改完 id、机器上认的却还是前 7 位。
+    /// 回落到默认至少是**一个他看得懂的值**，而且日志会说明发生了什么。
+    /// </summary>
+    private string ResolveBootIdFor(string? custom, string fallback, string entryLabel)
+    {
+        if (string.IsNullOrWhiteSpace(custom))
+        {
+            return fallback;
+        }
+
+        if (ComponentCatalog.IsValidBootId(custom))
+        {
+            return custom.Trim();
+        }
+
+        _log.Warn(string.Format(
+            Localization.LocalizationService.Instance["Log.BootIdInvalid"],
+            entryLabel,
+            custom.Trim(),
+            fallback));
+        return fallback;
     }
 
     /// <summary>
@@ -775,7 +801,8 @@ public sealed class ConfigGenerator
             return;
         }
 
-        // 两个引导项选了不同目录下的同名图：给后来者加该引导项的 id 前缀。
+        // 两个引导项选了不同目录下的同名图：给后来者加该引导项的**内置** id 前缀
+        //（刻意用内置那串而不是用户自定义的 ini id：文件名要稳定，否则改一次 id 就换一批文件名）。
         // 不加的话后复制的那张会盖掉先复制的，两个引导项静默变成同一张图。
         if (staged.TryGetValue(fileName, out var owner)
             && !string.Equals(owner, sourcePath, StringComparison.OrdinalIgnoreCase))

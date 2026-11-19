@@ -105,6 +105,16 @@ public sealed class AppSettings
     public string BootEmuNandTitle { get; set; } = string.Empty;
 
     /// <summary>
+    /// 三个引导项的 hekate <c>id=</c>（最多 7 个字符，hekate 内部 <c>char id[8]</c>）。
+    /// 留空 = 内置默认（zsxt / zspjxt / xunipjx）；老存档没有这三个字段 ⇒ 归一化补成空串 ⇒ 走默认。
+    /// </summary>
+    public string BootStockId { get; set; } = string.Empty;
+
+    public string BootSysNandId { get; set; } = string.Empty;
+
+    public string BootEmuNandId { get; set; } = string.Empty;
+
+    /// <summary>
     /// 三个引导项各自的启动图（用户本地图片的绝对路径）。留空 = 不设置。
     /// 生成时复制到 <c>bootloader/res/</c>，并写 <c>logopath=bootloader/res/&lt;文件名&gt;</c>。
     /// </summary>
@@ -215,6 +225,9 @@ public static class SettingsStore
                     settings.BootStockTitle ??= string.Empty;
                     settings.BootSysNandTitle ??= string.Empty;
                     settings.BootEmuNandTitle ??= string.Empty;
+                    settings.BootStockId ??= string.Empty;
+                    settings.BootSysNandId ??= string.Empty;
+                    settings.BootEmuNandId ??= string.Empty;
                     settings.BootStockLogo ??= string.Empty;
                     settings.BootSysNandLogo ??= string.Empty;
                     settings.BootEmuNandLogo ??= string.Empty;

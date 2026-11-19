@@ -6,7 +6,7 @@
 #   sc          是         否       exe + 一堆 dll            什么都不用装
 #   fx          否         否       exe + 少量 dll            需装 .NET 8 Desktop Runtime
 #   sc-single   是         是       一个 exe（约 60~160MB）   什么都不用装
-#   fx-single   否         是       一个 exe（约 1~2MB）      需装 .NET 8 Desktop Runtime
+#   fx-single   否         是       一个 exe（实测约 3MB）    需装 .NET 8 Desktop Runtime
 #
 # 用法：
 #   bash tools/build.sh                     # 交互菜单

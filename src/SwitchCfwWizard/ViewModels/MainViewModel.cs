@@ -255,6 +255,9 @@ public sealed class MainViewModel : ObservableObject, ILogSink
         _bootStockTitle = _settings.BootStockTitle ?? string.Empty;
         _bootSysNandTitle = _settings.BootSysNandTitle ?? string.Empty;
         _bootEmuNandTitle = _settings.BootEmuNandTitle ?? string.Empty;
+        _bootStockId = _settings.BootStockId ?? string.Empty;
+        _bootSysNandId = _settings.BootSysNandId ?? string.Empty;
+        _bootEmuNandId = _settings.BootEmuNandId ?? string.Empty;
         _bootStockLogo = _settings.BootStockLogo ?? string.Empty;
         _bootSysNandLogo = _settings.BootSysNandLogo ?? string.Empty;
         _bootEmuNandLogo = _settings.BootEmuNandLogo ?? string.Empty;
@@ -681,6 +684,23 @@ public sealed class MainViewModel : ObservableObject, ILogSink
             return string.Format(loc["Log.Setting.SlotFileName"], nameGroup);
         }
 
+        // 三个引导项的 id：键名是 BootStockId / BootSysNandId / BootEmuNandId，
+        // 直接打出来是一串驼峰；日志里换成「引导项 id（正版系统）」这种人话。
+        if (string.Equals(key, nameof(BootStockId), StringComparison.Ordinal))
+        {
+            return string.Format(loc["Log.Setting.BootId"], loc["Global.Boot.Stock"]);
+        }
+
+        if (string.Equals(key, nameof(BootSysNandId), StringComparison.Ordinal))
+        {
+            return string.Format(loc["Log.Setting.BootId"], loc["Global.Boot.SysNand"]);
+        }
+
+        if (string.Equals(key, nameof(BootEmuNandId), StringComparison.Ordinal))
+        {
+            return string.Format(loc["Log.Setting.BootId"], loc["Global.Boot.EmuNand"]);
+        }
+
         // boot.dat 的下载地址 / 检查更新的地址：两项都**有默认值**，日志里要能看出
         // 「用户改过没有」，所以给人话标签而不是原始键名。
         if (string.Equals(key, nameof(BootDatUrl), StringComparison.Ordinal))
@@ -970,6 +990,9 @@ public sealed class MainViewModel : ObservableObject, ILogSink
     private string _bootStockTitle = string.Empty;
     private string _bootSysNandTitle = string.Empty;
     private string _bootEmuNandTitle = string.Empty;
+    private string _bootStockId = string.Empty;
+    private string _bootSysNandId = string.Empty;
+    private string _bootEmuNandId = string.Empty;
     private string _bootStockLogo = string.Empty;
     private string _bootSysNandLogo = string.Empty;
     private string _bootEmuNandLogo = string.Empty;
@@ -1088,6 +1111,60 @@ public sealed class MainViewModel : ObservableObject, ILogSink
             }
         }
     }
+
+    // ── 引导项 id（用户可改，留空用内置默认）──────────────────────
+    /// <summary>
+    /// 正版系统的 hekate <c>id=</c>。留空 = 内置默认（<see cref="ComponentCatalog.DefaultBootIdStock"/>）。
+    /// 只影响 hekate / Nyx 用哪串标识认这一项，不影响引导行为。
+    /// </summary>
+    public string BootStockId
+    {
+        get => _bootStockId;
+        set
+        {
+            if (SetProperty(ref _bootStockId, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(BootStockIdIsInvalid));
+            }
+        }
+    }
+
+    public string BootSysNandId
+    {
+        get => _bootSysNandId;
+        set
+        {
+            if (SetProperty(ref _bootSysNandId, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(BootSysNandIdIsInvalid));
+            }
+        }
+    }
+
+    public string BootEmuNandId
+    {
+        get => _bootEmuNandId;
+        set
+        {
+            if (SetProperty(ref _bootEmuNandId, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(BootEmuNandIdIsInvalid));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 填了但不能用（超过 7 个字符 / 含不允许的字符）。**留空不算不合法** —— 那是「用默认」。
+    /// 界面就地标红；生成时还会回落到内置默认，并在日志里写明用的是哪个。
+    /// </summary>
+    public bool BootStockIdIsInvalid => IsBootIdRejected(BootStockId);
+
+    public bool BootSysNandIdIsInvalid => IsBootIdRejected(BootSysNandId);
+
+    public bool BootEmuNandIdIsInvalid => IsBootIdRejected(BootEmuNandId);
+
+    private static bool IsBootIdRejected(string value)
+        => !string.IsNullOrWhiteSpace(value) && !ComponentCatalog.IsValidBootId(value);
 
     // ── 引导项启动图（用户指定的本地图片）────────────────────────
     /// <summary>
@@ -2563,6 +2640,9 @@ public sealed class MainViewModel : ObservableObject, ILogSink
             BootStockTitle = BootStockTitle,
             BootSysNandTitle = BootSysNandTitle,
             BootEmuNandTitle = BootEmuNandTitle,
+            BootStockId = BootStockId,
+            BootSysNandId = BootSysNandId,
+            BootEmuNandId = BootEmuNandId,
             BootStockLogo = BootStockLogo,
             BootSysNandLogo = BootSysNandLogo,
             BootEmuNandLogo = BootEmuNandLogo,
@@ -2780,6 +2860,9 @@ public sealed class MainViewModel : ObservableObject, ILogSink
         target.BootStockTitle = BootStockTitle.Trim();
         target.BootSysNandTitle = BootSysNandTitle.Trim();
         target.BootEmuNandTitle = BootEmuNandTitle.Trim();
+        target.BootStockId = BootStockId.Trim();
+        target.BootSysNandId = BootSysNandId.Trim();
+        target.BootEmuNandId = BootEmuNandId.Trim();
         target.BootStockLogo = BootStockLogo.Trim();
         target.BootSysNandLogo = BootSysNandLogo.Trim();
         target.BootEmuNandLogo = BootEmuNandLogo.Trim();

@@ -398,6 +398,32 @@
                                          Text="{Binding BootStockTitle, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="{loc:Loc Global.Boot.Name.Hint}" />
                             </Grid>
+                            <!-- id：这一项在 hekate_ipl.ini 里的 id=…（留空 = 内置默认：zsxt / zspjxt / xunipjx）。
+                                 ⚠️ 上限 7 个字符 —— hekate 内部是 char id[8]，第 8 位留给结束符；
+                                 超出的部分会被它**静默截断**，所以这里 MaxLength 先把住输入，
+                                 生成侧还有一道 ResolveBootId（手改 settings.json 也拦得住）。 -->
+                            <Grid Margin="22,0,0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="{loc:Loc Global.Boot.Id}"
+                                           Style="{StaticResource HintText}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+                                <TextBox Grid.Column="1"
+                                         Text="{Binding BootStockId, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="7"
+                                         ToolTip="{loc:Loc Global.Boot.Id.Hint}" />
+                            </Grid>
+                            <TextBlock Text="{loc:Loc Global.Boot.Id.Invalid}"
+                                       Style="{StaticResource HintText}"
+                                       Foreground="{DynamicResource WarningBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="22,0,0,5"
+                                       Visibility="{Binding BootStockIdIsInvalid, Converter={StaticResource BoolToVis}}" />
+
                             <Grid Margin="22,0,0,4">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
@@ -471,6 +497,32 @@
                                          Text="{Binding BootSysNandTitle, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="{loc:Loc Global.Boot.Name.Hint}" />
                             </Grid>
+                            <!-- id：这一项在 hekate_ipl.ini 里的 id=…（留空 = 内置默认：zsxt / zspjxt / xunipjx）。
+                                 ⚠️ 上限 7 个字符 —— hekate 内部是 char id[8]，第 8 位留给结束符；
+                                 超出的部分会被它**静默截断**，所以这里 MaxLength 先把住输入，
+                                 生成侧还有一道 ResolveBootId（手改 settings.json 也拦得住）。 -->
+                            <Grid Margin="22,0,0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="{loc:Loc Global.Boot.Id}"
+                                           Style="{StaticResource HintText}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+                                <TextBox Grid.Column="1"
+                                         Text="{Binding BootSysNandId, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="7"
+                                         ToolTip="{loc:Loc Global.Boot.Id.Hint}" />
+                            </Grid>
+                            <TextBlock Text="{loc:Loc Global.Boot.Id.Invalid}"
+                                       Style="{StaticResource HintText}"
+                                       Foreground="{DynamicResource WarningBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="22,0,0,5"
+                                       Visibility="{Binding BootSysNandIdIsInvalid, Converter={StaticResource BoolToVis}}" />
+
                             <Grid Margin="22,0,0,4">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
@@ -544,6 +596,32 @@
                                          Text="{Binding BootEmuNandTitle, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="{loc:Loc Global.Boot.Name.Hint}" />
                             </Grid>
+                            <!-- id：这一项在 hekate_ipl.ini 里的 id=…（留空 = 内置默认：zsxt / zspjxt / xunipjx）。
+                                 ⚠️ 上限 7 个字符 —— hekate 内部是 char id[8]，第 8 位留给结束符；
+                                 超出的部分会被它**静默截断**，所以这里 MaxLength 先把住输入，
+                                 生成侧还有一道 ResolveBootId（手改 settings.json 也拦得住）。 -->
+                            <Grid Margin="22,0,0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="{loc:Loc Global.Boot.Id}"
+                                           Style="{StaticResource HintText}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+                                <TextBox Grid.Column="1"
+                                         Text="{Binding BootEmuNandId, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="7"
+                                         ToolTip="{loc:Loc Global.Boot.Id.Hint}" />
+                            </Grid>
+                            <TextBlock Text="{loc:Loc Global.Boot.Id.Invalid}"
+                                       Style="{StaticResource HintText}"
+                                       Foreground="{DynamicResource WarningBrush}"
+                                       TextWrapping="Wrap"
+                                       Margin="22,0,0,5"
+                                       Visibility="{Binding BootEmuNandIdIsInvalid, Converter={StaticResource BoolToVis}}" />
+
                             <Grid Margin="22,0,0,4">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />

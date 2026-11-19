@@ -597,6 +597,71 @@ public static class ComponentCatalog
             : custom.Trim();
 
     /// <summary>
+    /// hekate 引导项 <c>id=</c> 的长度上限。
+    ///
+    /// hekate 内部按 <c>char id[8]</c> 存放，第 8 位要留给 NULL 终止符 ——
+    /// 官方 README 的原文是「id=IDNAME … Max 7 chars」。
+    /// 超出的部分会被**静默截断**：写进去 8 个字符，机器上生效的只有前 7 个，
+    /// 文件里看着却还是 8 个 —— 这种「看起来对、其实不是」的值比报错更难查。
+    /// </summary>
+    public const int MaxBootIdLength = 7;
+
+    /// <summary>
+    /// 三个引导项的内置 id（用户留空时用它们）。值来自用户实际在用的 <c>hekate_ipl.ini</c>：
+    /// 正版 <c>zsxt</c>、真实破解 <c>zspjxt</c>、虚拟破解 <c>xunipjx</c>。
+    ///
+    /// ⚠️ 虚拟破解那一项用户写的是 <c>xunipjxt</c>（8 个字符）—— 按
+    /// <see cref="MaxBootIdLength"/> 截到 7 位才是**机器上真正生效**的那个，
+    /// 所以内置默认直接取 7 位版本。
+    /// </summary>
+    public const string DefaultBootIdStock = "zsxt";
+
+    public const string DefaultBootIdSysNand = "zspjxt";
+
+    public const string DefaultBootIdEmuNand = "xunipjx";
+
+    /// <summary>
+    /// 用户填的 id 能不能用：1–<see cref="MaxBootIdLength"/> 个字符，只允许字母、数字、下划线、短横线。
+    ///
+    /// 为什么限得这么死：<c>id=</c> 是 ini 里**一行值的全部**，混进空格 / <c>=</c> / 标点
+    /// 会把这一行拆坏（hekate 那侧要么报错，要么把后半截当成另一个键）。
+    /// 留空**不算**合法 —— 留空的语义是「用内置默认」，由 <see cref="ResolveBootId"/> 处理。
+    /// </summary>
+    public static bool IsValidBootId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > MaxBootIdLength)
+        {
+            return false;
+        }
+
+        foreach (var c in trimmed)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c != '_' && c != '-')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 引导项 id 的**唯一**解析规则：能用就用用户的（去首尾空白），否则用内置默认。
+    ///
+    /// ⚠️ 不合法的值**不**做「截断后照写」：那会写出一个与用户输入不同、又不是他要的 id。
+    /// 这里回落到内置默认，**告警由调用方负责发**（生成器会写进日志）——
+    /// 静默回落与不做回落一样糟：用户会以为自己填的那条生效了。
+    /// </summary>
+    public static string ResolveBootId(string? custom, string fallback)
+        => IsValidBootId(custom) ? custom!.Trim() : fallback;
+
+    /// <summary>
     /// 这次的 hekate **包**（<c>bootloader/**</c> + Nyx）要不要从中文本地化镜像取。
     ///
     /// 判据只有一条：**界面语言是中文**。用户 2026-09-18 明确要求 ——

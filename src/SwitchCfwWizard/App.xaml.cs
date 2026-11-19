@@ -30,6 +30,12 @@ public partial class App : Application
     /// </summary>
     internal static string? ShotPath { get; private set; }
 
+    /// <summary>
+    /// `--shot-focus=属性名`：出图时滚到哪个输入框（默认「检查更新的地址」）。
+    /// 改哪个区域就先滚到那个区域的框 —— 否则它多半在滚动区外，图上看不到（白出一次）。
+    /// </summary>
+    internal static string? ShotFocus { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -37,8 +43,11 @@ public partial class App : Application
         IsSelfTest = e.Args.Any(a => string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase));
         IsHeadlessRun = e.Args.Any(a => string.Equals(a, "--run", StringComparison.OrdinalIgnoreCase));
 
+        // ⚠️ 只认 `--shot` 与 `--shot=…` 两种写法：写成 StartsWith("--shot") 会把
+        //    `--shot-focus=…` 也吞进来（它同样以 --shot 开头）。
         var shotArg = e.Args.FirstOrDefault(
-            a => a.StartsWith("--shot", StringComparison.OrdinalIgnoreCase));
+            a => string.Equals(a, "--shot", StringComparison.OrdinalIgnoreCase)
+                 || a.StartsWith("--shot=", StringComparison.OrdinalIgnoreCase));
 
         if (shotArg is not null)
         {
@@ -48,6 +57,14 @@ public partial class App : Application
             ShotPath = string.IsNullOrWhiteSpace(value)
                 ? Path.Combine(AppPaths.BaseDirectory, "selftest.png")
                 : Path.GetFullPath(value);
+        }
+
+        var focusArg = e.Args.FirstOrDefault(
+            a => a.StartsWith("--shot-focus=", StringComparison.OrdinalIgnoreCase));
+
+        if (focusArg is not null)
+        {
+            ShotFocus = focusArg["--shot-focus=".Length..].Trim('"');
         }
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
@@ -733,6 +750,85 @@ public partial class App : Application
             }
         }
 
+        // ── 三个引导项的 id 输入框（用户 2026-11-19：id 允许用户配置）──────────
+        // 判据落在**渲染出来的控件**上：框被挪走 / `MaxLength` 漏了 / 绑定绑到空值，
+        // 这三种毛病都不报错、也不崩溃，只表现为「框在，但不起作用」。
+        var locForIds = SwitchCfwWizard.Localization.LocalizationService.Instance;
+        var idEntries = new[]
+        {
+            (Property: nameof(MainViewModel.BootStockId), Label: locForIds["Global.Boot.Stock"]),
+            (Property: nameof(MainViewModel.BootSysNandId), Label: locForIds["Global.Boot.SysNand"]),
+            (Property: nameof(MainViewModel.BootEmuNandId), Label: locForIds["Global.Boot.EmuNand"]),
+        };
+
+        var idBoxReport = new List<string>();
+
+        foreach (var entry in idEntries)
+        {
+            var box = BoxFor(entry.Property);
+
+            if (box is null)
+            {
+                themeProblems.Add($"「{entry.Label}」的 id 输入框找不到（绑定 {entry.Property} 没有落到界面上）");
+                continue;
+            }
+
+            idBoxReport.Add($"{entry.Label}={box.MaxLength}");
+
+            if (box.MaxLength != SwitchCfwWizard.Services.ComponentCatalog.MaxBootIdLength)
+            {
+                themeProblems.Add(
+                    $"「{entry.Label}」的 id 输入框 MaxLength 是 {box.MaxLength}，应为 "
+                    + $"{SwitchCfwWizard.Services.ComponentCatalog.MaxBootIdLength}"
+                    + " —— 多打的字会被 hekate 静默截断（它内部是 char id[8]）");
+            }
+
+            if (!box.IsVisible)
+            {
+                themeProblems.Add($"「{entry.Label}」的 id 输入框不可见（被折叠、或被挪进了别的容器）");
+            }
+        }
+
+        report.AppendLine($"SELFTEST: bootid-boxes {string.Join(" | ", idBoxReport)}");
+
+        // 就地标红：能用不许红、不能用必须红。三条共用一个文案，所以「有 1 条可见」就够了。
+        if (hintViewModelForExpand is not null)
+        {
+            var invalidHint = locForIds["Global.Boot.Id.Invalid"];
+            var originalStockId = hintViewModelForExpand.BootStockId;
+
+            try
+            {
+                hintViewModelForExpand.BootStockId = "ok_id-1";
+                Dispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
+                var withValid = VisibleHintCount(invalidHint);
+
+                hintViewModelForExpand.BootStockId = "12345678";   // 8 位 = 超上限
+                Dispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
+                var withTooLong = VisibleHintCount(invalidHint);
+
+                hintViewModelForExpand.BootStockId = "有空格 的";
+                Dispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
+                var withBadChar = VisibleHintCount(invalidHint);
+
+                report.AppendLine(
+                    $"SELFTEST: bootid-invalid valid={withValid} tooLong={withTooLong} badChar={withBadChar}");
+
+                if (withValid != 0 || withTooLong != 1 || withBadChar != 1)
+                {
+                    themeProblems.Add(
+                        "id 的「不能用」提示接线不对：能用时应 0 条、超 7 位应 1 条、含非法字符应 1 条，"
+                        + $"实际 {withValid}/{withTooLong}/{withBadChar}");
+                }
+            }
+            finally
+            {
+                // 这三个是**会落盘**的设置项：自检不许改坏用户的存档
+                hintViewModelForExpand.BootStockId = originalStockId;
+                Dispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
+            }
+        }
+
         if (window.DataContext is SwitchCfwWizard.ViewModels.MainViewModel hintViewModel)
         {
             // ⚠️ 这两个是**会落盘的设置项**：自检里改完必须还原，否则用户跑一次 --selftest
@@ -800,6 +896,76 @@ public partial class App : Application
 
         report.AppendLine($"SELFTEST: expander-header {expanderHeaderInfo}");
 
+        // ── 运行日志：新条目要自动滚到最新一条（用户 2026-11-19 要求）──────────
+        // ⚠️ 判据读**渲染出来的滚动位置**。这一条原先是「有 ScrollIntoView 就算有」的写法 ——
+        //    而代码本来就有那句 ScrollIntoView，界面却不动：它跑在 CollectionChanged 里，
+        //    此刻这一轮布局还没做，于是按**旧的** extent 算偏移，等于什么都没滚。
+        //    所以「有没有那句代码」证明不了任何事，只能量滚动条的实际位置。
+        if (window.FindName("LogList") is System.Windows.Controls.ListBox logList
+            && hintViewModelForExpand is not null)
+        {
+            var savedLogCount = hintViewModelForExpand.Logs.Count;
+
+            try
+            {
+                // 条目直接进集合：走 vm.Log 会写进用户的日志文件，自检不该污染它。
+                for (var i = 1; i <= 120; i++)
+                {
+                    hintViewModelForExpand.Logs.Add(new LogEntry(
+                        DateTimeOffset.Now,
+                        LogLevel.Info,
+                        $"自检：滚动检查第 {i} 条 —— 一条足够长的日志，用来把列表撑到出现滚动条。"));
+                }
+
+                // 自动滚动的实现排在 Background 优先级 ⇒ 这里必须推到**更晚**的优先级再读，
+                // 否则读到的是「还没滚」的那一帧（这就是第一版判据会误报绿的原因）。
+                Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+                Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+
+                var logScroller = FindDescendant<System.Windows.Controls.ScrollViewer>(logList);
+
+                if (logScroller is null)
+                {
+                    themeProblems.Add("运行日志的 ScrollViewer 找不到 —— 判据无从谈起（列表模板变了？）");
+                }
+                else
+                {
+                    var offset = logScroller.VerticalOffset;
+                    var scrollable = logScroller.ScrollableHeight;
+
+                    report.AppendLine(
+                        $"SELFTEST: log-scroll offset={offset:0.#} scrollable={scrollable:0.#} "
+                        + $"items={hintViewModelForExpand.Logs.Count}");
+
+                    // 前置条件：列表必须真的溢出了。否则「在底部」是恒真的，
+                    // 这条判据就成了橡皮图章（§1 教训：恒真的判据比没有更坏）。
+                    if (scrollable <= 0)
+                    {
+                        themeProblems.Add(
+                            "日志列表没有产生滚动条 —— 这条判据等于没测（自检条目数不够，或列表高度没被约束）");
+                    }
+                    else if (offset < scrollable - 1)
+                    {
+                        themeProblems.Add(
+                            $"新日志到达后没有滚到最新一条：滚动位置 {offset:0.#} / 可滚 {scrollable:0.#}"
+                            + " —— 用户要求「有新的运行日志时滚动到最新的一条」");
+                    }
+                }
+            }
+            finally
+            {
+                // 把这批自检条目摘掉，别留在界面/截图里（它们只是判据的夹具）
+                while (hintViewModelForExpand.Logs.Count > savedLogCount)
+                {
+                    hintViewModelForExpand.Logs.RemoveAt(hintViewModelForExpand.Logs.Count - 1);
+                }
+            }
+        }
+        else
+        {
+            themeProblems.Add("自检失效：找不到运行日志列表 LogList（或窗口 DataContext 不是 MainViewModel）");
+        }
+
         // ── `--shot` 出图（放在这里：暗夜相关的体检都已跑完，动主题不会污染判据）──────
         if (ShotPath is not null)
         {
@@ -816,7 +982,7 @@ public partial class App : Application
 
                 // 先把「检查更新的地址」那个框滚进视野：它在右列的滚动区里，不滚就落在窗口外面，
                 // 出图只能看到上半段（第一版就是这样，白出一次）。
-                BoxFor(nameof(MainViewModel.UpdateUrl))?.BringIntoView();
+                BoxFor(ShotFocus ?? nameof(MainViewModel.UpdateUrl))?.BringIntoView();
 
                 // boot.dat 那张卡片同理在**左列**的滚动区里 —— 也要滚到它那儿，否则「卡片上那行文字」
                 // 根本不在图上（每一轮要改的往往正是卡片里的东西）。两列各有各的滚动条，所以

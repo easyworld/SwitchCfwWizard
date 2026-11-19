@@ -136,6 +136,19 @@ public sealed class WizardOptions
     public string BootEmuNandTitle { get; set; } = string.Empty;
 
     /// <summary>
+    /// 三个引导项的 hekate <c>id=</c>。留空 = 内置默认
+    /// （<see cref="ComponentCatalog.DefaultBootIdStock"/> 等三个常量）。
+    ///
+    /// 与显示名不同：id 是给 hekate / Nyx **认这一项**用的标识（不是给人看的），
+    /// 上限 7 个字符；不值钱但写坏了会让「按 id 找引导项」的工具找不到它。
+    /// </summary>
+    public string BootStockId { get; set; } = string.Empty;
+
+    public string BootSysNandId { get; set; } = string.Empty;
+
+    public string BootEmuNandId { get; set; } = string.Empty;
+
+    /// <summary>
     /// 三个引导项各自的启动图（用户在本地选的图片文件，绝对路径）。留空表示不设置。
     /// 生成时会复制到 <c>bootloader/res/</c>，并在引导项里写 <c>logopath=bootloader/res/&lt;文件名&gt;</c>。
     /// </summary>

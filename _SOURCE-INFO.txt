@@ -1,12 +1,12 @@
 ﻿SwitchCFWizard 源码包
 ==============================================
 
-  版本        0.1.0（取自 src/SwitchCfwWizard/SwitchCfwWizard.csproj）
-  打包时间    2026-09-24 16:27:14 +08:00
+  版本        0.1.3（取自 src/SwitchCfwWizard/SwitchCfwWizard.csproj）
+  打包时间    2026-11-19 22:36:42 +08:00
   打包脚本    tools/pack-source.ps1（仓库自带，可重复执行）
   文件数      89
-  解压后体积  2.09 MB
-  压缩包      SwitchCFWizard-0.1.0-src.zip
+  解压后体积  2.12 MB
+  压缩包      SwitchCFWizard-0.1.3-src.zip
 
 内容概览
 ----------------------------------------------
