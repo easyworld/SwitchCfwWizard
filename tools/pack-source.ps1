@@ -16,8 +16,9 @@ SwitchCFWizard 源码打包 —— 一键把「可发布的源码树」打成一
     -OpenOutputDir  打完后打开输出目录
 
   打包内容 = 项目根下、除「构建产物 / 发布产物 / 运行痕迹 / 编辑器缓存」之外的全部文件。
-  排除规则就是下面那三个 $Skip* 列表，没有别的暗规则；结束时会把**实际跳过了什么**打印出来，
+  排除规则就是下面那几个 $Skip* 变量，没有别的暗规则；结束时会把**实际跳过了什么**打印出来，
   包内的 _SOURCE-INFO.txt 里也留一份。
+  （目录名既认精确名，也认 `dist.stale-*` / `publish.old` 这类同族名字 —— 见 $SkipDirPattern。）
 
   为什么要挑着打、而不是直接压整个目录：这个仓库根下同时躺着
   publish/（165 MB 发布产物）、dist/（163 MB 交付目录）、src/**/bin|obj（161 MB 构建中间件）、
@@ -49,6 +50,12 @@ $SkipDirNames = @(
     'TestResults',
     '.workbuddy-ai'                                   # AI 工作数据（记忆、备份、截图）
 )
+
+# ⚠️ 上表是**精确名**匹配，拦不住「带后缀的同族目录」：`dist.stale-1120-132907`、
+#    `publish.old`、`bin.bak` 这些名字不等于 dist/publish/bin，于是被当成源码目录走进去 ——
+#    实测一个 dist.stale-* 就带进 163 MB 的运行时 dll，源码包从 2 MB 涨到 152 MB。
+#    build.sh / refresh-dist.py 每跑一次就留一个 `.stale-<月日-时分秒>`，所以这条不是理论问题。
+$SkipDirPattern = '^(bin|obj|dist|publish|out|download|logs)([.\-_].*)?$'
 
 # 文件名命中即跳过
 $SkipFileNames = @('settings.json', 'Thumbs.db', '.DS_Store', 'desktop.ini')
@@ -114,7 +121,7 @@ function Get-PackFiles([string] $Root, [string] $ExcludeFullPath) {
         foreach ($sub in [System.IO.Directory]::GetDirectories($dir)) {
             $dirName = [System.IO.Path]::GetFileName($sub)
 
-            if ($SkipDirNames -contains $dirName) {
+            if (($SkipDirNames -contains $dirName) -or ($dirName -match $SkipDirPattern)) {
                 if ($skippedDirs.ContainsKey($dirName)) { $skippedDirs[$dirName]++ }
                 else { $skippedDirs[$dirName] = 1 }
                 continue

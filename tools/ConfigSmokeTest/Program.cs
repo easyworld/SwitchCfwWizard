@@ -11,6 +11,7 @@ using System.Windows.Threading;
 using SwitchCfwWizard.Infrastructure;
 using SwitchCfwWizard.Localization;
 using SwitchCfwWizard.Models;
+using SwitchCfwWizard.SdReset;
 using SwitchCfwWizard.Services;
 using SwitchCfwWizard.ViewModels;
 
@@ -104,6 +105,11 @@ internal static class Program
         // 2026-09-22：下载百分比接上 + boot.dat 卡片那行文字的空状态
         CheckUpdateProgressIsWired();
         CheckBootDatStatusText();
+        CheckSdResetDrag();
+        CheckCardCopyPlan();
+        CheckCardCopyRunner();
+        CheckSafeEjectText();
+        CheckLocalReuse();
         CheckDownloadFallback();
         // 用户配置基线：锁死「向导默认值 == 用户实际在用的 ini」，默认值被改回上游值会立刻报警。
         // 放在这里是因为它要生成一整套文件，后面每个用例都会自己重新生成，不会互相干扰。
@@ -253,6 +259,10 @@ internal static class Program
         // 用户要求：打包是「想用才勾」的收尾动作，默认不勾，免得每次生成都多出一份 zip。
         Assert(!new AppSettings().AutoPackZip, "生成后应默认**不**自动打包 zip（用户要求默认不勾）");
         Assert(new AppSettings().PreferPrerelease, "应默认优先预览版");
+        // 用户 2026-11-20：这个开关挪到「全局选项 → 输出内容」，主界面与重置窗口共用它。
+        // 默认关闭 —— 拿本地旧文件顶替真正的下载，出问题时最难查。
+        Assert(!new AppSettings().PreferLocalDownloads,
+            "「优先使用本地资源」应默认**不**勾选（用户要求默认不勾）");
         Assert(new AppSettings().Language == LocalizationService.DefaultLanguageCode,
             "默认语言应为简体中文");
         Assert(new AppSettings().BootStock && new AppSettings().BootSysNand && new AppSettings().BootEmuNand,
@@ -9752,7 +9762,7 @@ internal static class Program
         var pattern = new Regex(
             @"loc:Loc\s+(" + KeyShape + @")"
             + @"|(?:LocalizationService\.Instance|loc)\[?""(" + KeyShape + @")"""
-            + @"|""((?:App|Boot|Check|Common|Component|Dialog|Global|Group|Log|Opt|Settings)\." + KeyShape + @")""",
+            + @"|""((?:App|Boot|Check|Common|Component|Dialog|Global|Group|Log|Opt|SdReset|Settings)\." + KeyShape + @")""",
             RegexOptions.Compiled);
 
         var referenced = new SortedSet<string>(StringComparer.Ordinal);
@@ -9772,7 +9782,7 @@ internal static class Program
                 continue;
             }
 
-            foreach (Match match in pattern.Matches(File.ReadAllText(file)))
+            foreach (Match match in pattern.Matches(StripDocComments(File.ReadAllText(file))))
             {
                 for (var group = 1; group <= 3; group++)
                 {
@@ -9786,6 +9796,19 @@ internal static class Program
         }
 
         return referenced;
+    }
+
+    /// <summary>
+    /// 去掉 `///` 文档注释与 `<!-- -->` XAML 注释，再让正则去扫。
+    ///
+    /// ⚠️ 不剥的话，`<see cref="SdReset.CardCopyWindow"/>` 会被第三支正则当成一个语言键
+    /// （引号内正好以 `SdReset.` 开头）—— 于是「缺 3 个键」的假红出现在一个完全正确的 cref 上。
+    /// 只剥这两类：行内 `//` 会误伤 `https://…`，而键引用本来也不会写在注释里。
+    /// </summary>
+    private static string StripDocComments(string text)
+    {
+        var withoutDoc = Regex.Replace(text, @"(?m)^\s*///.*$", string.Empty);
+        return Regex.Replace(withoutDoc, @"<!--.*?-->", string.Empty, RegexOptions.Singleline);
     }
 
     /// <summary>
@@ -10273,6 +10296,405 @@ internal static class Program
         {
             _settingsLeakSection = title;
         }
+    }
+
+    /// <summary>
+    /// 「把 out 复制进 TF 卡」的删除判定（用户 2026-11-20）。
+    ///
+    /// 这个功能里唯一不可逆的动作是删除，而删除与否**只看名字算不算保留**。
+    /// ⚠️ 最容易写错的是用 `StartsWith`：`Nintendo_backup`、`emuMMC-old`、`JKSV2` 会被误判成保留，
+    /// 于是用户选了「清空」却看见东西还在 —— 这种事没法用日志解释过去。
+    /// </summary>
+    private static void CheckCardCopyPlan()
+    {
+        Section("复制进 TF 卡：只保留 Nintendo / emuMMC / JKSV（文件夹）");
+
+        foreach (var keep in new[]
+                 {
+                     "Nintendo", "nintendo", "NINTENDO",
+                     "emuMMC", "emummc", "EMUMMC",
+                     "JKSV", "jksv", "Jksv",
+                 })
+        {
+            Assert(CardCopyPlan.IsKept(keep) && !CardCopyPlan.ShouldDelete(keep),
+                $"「{keep}」应被保留（大小写不敏感）");
+        }
+
+        // 前缀 / 后缀相近的名字**必须删**：这条是「整名相等」与「StartsWith」的分界线。
+        foreach (var gone in new[]
+                 {
+                     "atmosphere", "bootloader", "switch", "warmboot", "payload.bin",
+                     "Nintendo_backup", "Nintendo Switch", "emuMMC-old", "emuMMC2",
+                     "JKSV2", "JKSV.bak", "jksv_backup", "Nintendo3DS", string.Empty,
+                 })
+        {
+            Assert(!CardCopyPlan.IsKept(gone) && CardCopyPlan.ShouldDelete(gone),
+                $"「{gone}」应被删除（不能靠前缀认亲）");
+        }
+
+        Assert(CardCopyPlan.KeepNames.Length == 3, "保留名单应恰好 3 项");
+        Assert(string.Join(",", CardCopyPlan.KeepNames) == "Nintendo,emuMMC,JKSV",
+            "保留名单的顺序即界面展示顺序，应与用户要求一致");
+
+        // 「只保留三个**文件夹**」：同名文件不算保留项。
+        // 卡根上真出现一个叫 Nintendo 的文件时，留着它只会挡住新内容。
+        Assert(CardCopyPlan.IsKept("Nintendo", true) && CardCopyPlan.IsKept("jksv", true),
+            "三个名字的**目录**必须保留");
+        Assert(!CardCopyPlan.IsKept("Nintendo", false) && !CardCopyPlan.IsKept("emuMMC", false),
+            "同名的**文件**不算保留项（用户要留的是三个文件夹）");
+
+        // 空间余量：max(1%, 16 MiB) —— FAT32 的簇对齐会让实际占用略大于文件总字节
+        const long mib = 1024L * 1024L;
+        Assert(CardCopyPlan.RequiredFreeBytes(0) == 16 * mib, "0 字节时也要留 16 MiB 余量");
+        Assert(CardCopyPlan.RequiredFreeBytes(100 * mib) == 100 * mib + 16 * mib,
+            "100 MiB 时 16 MiB 余量更大，应按它算");
+
+        var big = 2L << 30;
+        Assert(CardCopyPlan.RequiredFreeBytes(big) == big + big / 100,
+            "2 GiB 时 1% 的余量（约 20 MiB）更大，应按它算");
+
+        // 目标必须落在卡内：复制这一步写错，就是把整个 out 写到别的地方去
+        Assert(CardCopyPlan.IsInsideRoot(@"E:\out", @"E:\out\atmosphere\package3"), "卡内子路径应通过");
+        Assert(!CardCopyPlan.IsInsideRoot(@"E:\out", @"E:\out\..\Windows\x"),
+            "用 .. 跑出卡外的路径必须拒绝");
+        Assert(!CardCopyPlan.IsInsideRoot(@"E:\out", @"E:\other\x"), "同级但不在根下的路径必须拒绝");
+        Assert(!CardCopyPlan.IsInsideRoot(@"E:\out", @"D:\out\x"), "别的盘必须拒绝");
+
+        // 卡根就是**盘符根**时（最常见的情况：H:\）—— 这里曾经整条复制链直接失败，
+        // 报「目标路径不在卡内：H:\.wizard-manifest.json」。原因是根路径的结尾分隔符
+        // 被 TrimEndingDirectorySeparator 原样保留，再补一个就成了 `H:\\`。
+        Assert(CardCopyPlan.NormalizeRoot(@"H:\") == @"H:\",
+            "盘符根只该有一个结尾分隔符（多补一个会让所有目标路径判成「不在卡内」）");
+        Assert(CardCopyPlan.IsInsideRoot(@"H:\", @"H:\.wizard-manifest.json"),
+            "盘符根下的文件必须算「在卡内」（这条就是用户遇到的报错）");
+        Assert(CardCopyPlan.IsInsideRoot(@"H:\", @"H:\atmosphere\package3"), "盘符根下的子目录必须通过");
+        Assert(CardCopyPlan.IsInsideRoot(@"H:", @"H:\bootloader\hekate_ipl.ini"),
+            "根写成 `H:` 也要能补成 `H:\\` 后判定通过");
+        Assert(!CardCopyPlan.IsInsideRoot(@"H:\", @"I:\atmosphere\package3"), "别的盘仍然必须拒绝");
+
+        // 盘符根本身没有「上一级」：`H:\..` 会被规范化回 `H:\`，所以它仍然在卡内 ——
+        // 这不是漏判，而是 Windows 的路径语义。写死这个预期，免得下次有人把它当漏洞又改回去。
+        Assert(CardCopyPlan.IsInsideRoot(@"H:\", @"H:\..\Windows\x"),
+            "盘符根的 .. 会被规范化回根，判定为「在卡内」是正确语义（不是逃逸）");
+        Assert(CardCopyPlan.IsInsideRoot(@"E:\out\", @"E:\out\atmosphere"),
+            "卡根末尾多带一个分隔符不该改变判定");
+
+        // 生成完「要不要打开输出目录」：只有「检测到可写的卡 + 选了复制进去」这一种组合不打开。
+        // 以前是无条件先开一次，选「复制进去」的人白看一个窗口。
+        Assert(!CardCopyPlan.ShouldOpenOutputFolder(cardUsable: true, userChoseCopy: true),
+            "选了「复制进去」就不该再弹资源管理器（复制窗口接手）");
+        Assert(CardCopyPlan.ShouldOpenOutputFolder(cardUsable: true, userChoseCopy: false),
+            "检测到卡但选「暂不复制」→ 要打开输出目录，让他自己拖");
+        Assert(CardCopyPlan.ShouldOpenOutputFolder(cardUsable: false, userChoseCopy: false),
+            "没检测到卡 → 要打开输出目录（不然用户不知道东西生成在哪）");
+        Assert(CardCopyPlan.ShouldOpenOutputFolder(cardUsable: false, userChoseCopy: true),
+            "没有可写的卡时即便他想复制也复制不了，仍要打开目录");
+    }
+
+    /// <summary>
+    /// 「弹出 TF 卡」失败时那句话（用户 2026-11-20 报：两个窗口都只弹一句
+    /// 「设备可能被其他程序占用（代码 1）」，既不知道哪一步失败、也不知道谁占着）。
+    ///
+    /// 这里钉的是**文案映射**：veto 类型要能落到人话、要带上占用者名字、
+    /// 未知值必须把原始码带出来（不能又变成一句看不出所以然的话）。
+    /// 真正的弹出要插卡才能验，见 .workbuddy-ai/scratch/eject-live。
+    /// </summary>
+    private static void CheckSafeEjectText()
+    {
+        Section("弹出失败时的文案：把 veto / CONFIGRET 翻成人话");
+
+        Assert(SafeEject.DescribeVeto(0, string.Empty).Length == 0,
+            "veto=0（没有 veto）不该冒出一句多余的话");
+
+        // WindowsApp（3）是最常见的一种：占用者名字就是进程名
+        var app = SafeEject.DescribeVeto(3, " explorer.exe ");
+        Assert(app.Contains("explorer.exe", StringComparison.Ordinal),
+            "veto=3 必须带上占用者名字（用户才知道该关哪个程序）");
+        Assert(app.Contains("正在使用", StringComparison.Ordinal), "veto=3 要说清是「正在使用」");
+
+        Assert(SafeEject.DescribeVeto(4, "x").Contains("句柄", StringComparison.Ordinal),
+            "veto=4（OutstandingOpen）应提到未关闭的句柄");
+        Assert(SafeEject.DescribeVeto(2, string.Empty).Contains("稍等", StringComparison.Ordinal),
+            "veto=2（PendingClose）应提示稍等再试");
+        Assert(SafeEject.DescribeVeto(9, string.Empty).Contains("不可禁用", StringComparison.Ordinal),
+            "veto=9（NonDisableable）应说明这类设备不能这样移除");
+
+        // 未知 veto：必须把原始码带出来，否则又回到「一句看不出所以然的话」
+        Assert(SafeEject.DescribeVeto(99, "y").Contains("99", StringComparison.Ordinal),
+            "未知 veto 要原样带出数字");
+        Assert(SafeEject.DescribeVeto(99, "y").Contains("y", StringComparison.Ordinal),
+            "未知 veto 也要带上占用者名字");
+
+        Assert(SafeEject.DescribeConfigRet(0) == "成功", "CR_SUCCESS 就是成功");
+        Assert(SafeEject.DescribeConfigRet(13).Contains("不存在", StringComparison.Ordinal),
+            "CR_NO_SUCH_DEVNODE 要说明设备没了");
+        Assert(SafeEject.DescribeConfigRet(32).Contains("管理员", StringComparison.Ordinal),
+            "CR_ACCESS_DENIED 要提示权限");
+        Assert(SafeEject.DescribeConfigRet(77).Contains("77", StringComparison.Ordinal),
+            "未知 CONFIGRET 要原样带出数字");
+    }
+
+    /// <summary>
+    /// 「清空 → 复制」的端到端验证：拿两个临时目录当「假卡 / 假 out」，
+    /// 跑完整条链，再断言**磁盘上的实际结果**。
+    ///
+    /// 这是唯一能证明「删对了、复制对了」的办法 —— 判据只测 <see cref="CardCopyPlan"/> 的话，
+    /// 「调用方忘了用它」这种错误永远抓不到。
+    /// </summary>
+    private static void CheckCardCopyRunner()
+    {
+        Section("复制进 TF 卡：清空与复制（临时目录端到端）");
+
+        var sandbox = Path.Combine(Path.GetTempPath(), "cfw-cardcopy-" + Guid.NewGuid().ToString("N"));
+        var card = Path.Combine(sandbox, "card");
+        var output = Path.Combine(sandbox, "out");
+
+        try
+        {
+            // 假卡：三个保留目录 + 该删的东西（含前缀陷阱与只读文件）
+            foreach (var keep in CardCopyPlan.KeepNames)
+            {
+                Directory.CreateDirectory(Path.Combine(card, keep));
+            }
+
+            File.WriteAllText(Path.Combine(card, "Nintendo", "save.bin"), "SAVE");
+
+            foreach (var gone in new[] { "atmosphere", "bootloader", "switch", "Nintendo_backup" })
+            {
+                Directory.CreateDirectory(Path.Combine(card, gone));
+                File.WriteAllText(Path.Combine(card, gone, "x.txt"), gone);
+            }
+
+            File.WriteAllText(Path.Combine(card, "payload.bin"), "PAYLOAD");
+
+            // 只读文件：`Directory.Delete(recursive: true)` 碰到它会直接抛，整项删不掉
+            var readonlyFile = Path.Combine(card, "bootloader", "readonly.bin");
+            File.WriteAllText(readonlyFile, "RO");
+            File.SetAttributes(readonlyFile, FileAttributes.ReadOnly);
+
+            // 假 out
+            Directory.CreateDirectory(Path.Combine(output, "atmosphere"));
+            Directory.CreateDirectory(Path.Combine(output, "bootloader"));
+            File.WriteAllText(Path.Combine(output, "atmosphere", "package3"), "PKG3");
+            File.WriteAllText(Path.Combine(output, "bootloader", "hekate_ipl.ini"), "INI");
+            File.WriteAllText(Path.Combine(output, "README.txt"), "README");
+
+            // 列表分类：窗口里那张「保留 / 将删除」的清单就是它
+            var listed = CardCopyRunner.ListRoot(card);
+            Assert(listed.Count == 8, $"假卡应有 8 个一级子项（实际 {listed.Count}）");
+            Assert(listed.Count(entry => entry.Keep) == 3, "列表里应恰好 3 项标「保留」");
+            Assert(listed.Single(entry => entry.Name.StartsWith("Nintendo", StringComparison.Ordinal)
+                                          && !entry.Name.StartsWith("Nintendo_", StringComparison.Ordinal)).Keep,
+                "Nintendo 应标保留");
+            Assert(!listed.Single(entry => entry.Name.StartsWith("Nintendo_", StringComparison.Ordinal)).Keep,
+                "Nintendo_backup 在列表里也必须标「将删除」");
+            Assert(listed[^1].Name == "payload.bin", "文件应排在目录之后");
+            Assert(listed.All(entry => entry.TagText.Length > 0), "每一项都要有「保留 / 将删除」标签（语言键缺失会变空串）");
+
+            var (files, bytes) = CardCopyRunner.Measure(output);
+            Assert(files == 3 && bytes == 13, $"Measure 应量出 3 个文件 / 13 字节（实际 {files} / {bytes}）");
+
+            var cleared = CardCopyRunner.Clear(card);
+
+            var left = Directory.GetDirectories(card)
+                .Select(path => Path.GetFileName(path) ?? string.Empty)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+
+            Assert(string.Join(",", left) == "JKSV,Nintendo,emuMMC",
+                $"清空后卡上应只剩三个保留目录（实际：{string.Join(",", left)}）");
+            Assert(!File.Exists(Path.Combine(card, "payload.bin")), "根目录下的文件应被删除");
+            Assert(!Directory.Exists(Path.Combine(card, "Nintendo_backup")),
+                "`Nintendo_backup` 必须删除 —— 靠前缀认亲就会把它留下");
+            Assert(File.Exists(Path.Combine(card, "Nintendo", "save.bin")), "保留目录里的文件不该被动");
+            Assert(cleared.Deleted == 5, $"应删除 5 项（实际 {cleared.Deleted}）");
+            Assert(cleared.Failed.Count == 0,
+                "不应有删除失败（实际：" + string.Join("；", cleared.Failed.Select(f => f.Name)) + "）");
+
+            var copied = CardCopyRunner.Copy(output, card);
+            Assert(copied.Files == 3 && copied.Bytes == 13,
+                $"应复制 3 个文件 / 13 字节（实际 {copied.Files} / {copied.Bytes}）");
+            Assert(File.ReadAllText(Path.Combine(card, "atmosphere", "package3")) == "PKG3",
+                "复制出来的内容应与 out 一致");
+            Assert(File.ReadAllText(Path.Combine(card, "Nintendo", "save.bin")) == "SAVE",
+                "复制不该动保留目录");
+
+            // 复制完之后卡上又有可删的东西了（atmosphere / bootloader / README.txt）；
+            // 再清一次应当只删它们，三个保留目录仍然不动 ——
+            // 这正好证明「保留名单」在第二次调用时也是生效的，不是只对第一次布局有效。
+            var again = CardCopyRunner.Clear(card);
+            Assert(again.Deleted == 3 && again.Failed.Count == 0,
+                $"再清一次应删掉刚复制进来的 3 项（实际 {again.Deleted}）");
+            Assert(Directory.Exists(Path.Combine(card, "Nintendo"))
+                   && File.Exists(Path.Combine(card, "Nintendo", "save.bin")),
+                "再清一次也不该动保留目录");
+            Assert(!Directory.Exists(Path.Combine(card, "atmosphere")),
+                "刚复制进来、又不在保留名单里的目录应被删掉");
+
+            // 「不删除卡上文件与文件夹，直接复制」（窗口里的勾选项）：
+            // 清单要把每一项都标成「保留」，且一项都不该被删。
+            var keepAll = CardCopyRunner.ListRoot(card, keepEverything: true);
+            Assert(keepAll.Count > 0 && keepAll.All(entry => entry.Keep),
+                "勾选「直接复制」后，清单里每一项都必须标「保留」");
+
+            var keptBefore = Directory.GetFileSystemEntries(card).Length;
+            var noClear = CardCopyRunner.ListRoot(card, keepEverything: true).Count;
+            Assert(keptBefore == noClear, "「直接复制」下清单项数应等于卡根实际项数");
+            Assert(Directory.Exists(Path.Combine(card, "Nintendo")), "「直接复制」不该删掉任何东西");
+
+            // 同名**文件**不算保留项：卡根上若有个叫 Nintendo 的文件，清空时必须删掉它，
+            // 否则新内容会被一个同名文件挡住（用户要留的是那三个文件夹）。
+            var fileCard = Path.Combine(sandbox, "filecard");
+            Directory.CreateDirectory(fileCard);
+            File.WriteAllText(Path.Combine(fileCard, "Nintendo"), "NOT-A-FOLDER");
+            Directory.CreateDirectory(Path.Combine(fileCard, "emuMMC"));
+
+            var fileCleared = CardCopyRunner.Clear(fileCard);
+            Assert(!File.Exists(Path.Combine(fileCard, "Nintendo")),
+                "同名的 Nintendo 是**文件**时必须删除（只保留三个文件夹）");
+            Assert(Directory.Exists(Path.Combine(fileCard, "emuMMC")),
+                "同名的 emuMMC 是**目录**时必须保留");
+            Assert(fileCleared.Deleted == 1, $"那个同名文件应被删除（实际删除 {fileCleared.Deleted} 项）");
+        }
+        finally
+        {
+            // 只读文件不摘属性，临时目录会删不干净
+            try { CardCopyRunner.ClearReadOnlyTree(sandbox); } catch { }
+            try { Directory.Delete(sandbox, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 「优先使用本地资源」（全局选项 → 输出内容 里的勾选项，默认不勾；
+    /// 主界面生成与「格式化与重建虚拟系统」共用这一个开关）。
+    ///
+    /// 判据只有一条值得反复确认：**大小必须与上游一致**。
+    /// 「文件存在」远远不够 —— 半截文件、上一版的残留都存在于 download 里，长得一模一样，
+    /// 真正的区别只有字节数；放它们过去，结果是卡装到一半才发现某个文件是坏的。
+    /// </summary>
+    private static void CheckLocalReuse()
+    {
+        Console.WriteLine();
+        Console.WriteLine("── 优先使用本地资源 ──");
+
+        var dir = Path.Combine(Path.GetTempPath(), "cfw-localreuse-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+
+        try
+        {
+            var good = Path.Combine(dir, "good.zip");
+            File.WriteAllBytes(good, new byte[100]);
+
+            Assert(MainViewModel.TryReuseLocalFile(good, 100, out var size) && size == 100,
+                "大小与上游一致时应复用本地文件");
+            Assert(!MainViewModel.TryReuseLocalFile(good, 200, out _),
+                "大小不一致（半截 / 上一版残留）必须拒绝，改为重新下载");
+            Assert(MainViewModel.TryReuseLocalFile(good, 0, out _),
+                "上游没给大小时，非空文件可以复用");
+            Assert(!MainViewModel.TryReuseLocalFile(Path.Combine(dir, "missing.zip"), 100, out _),
+                "本地没有该文件时不应复用");
+
+            var empty = Path.Combine(dir, "empty.zip");
+            File.WriteAllBytes(empty, Array.Empty<byte>());
+            Assert(!MainViewModel.TryReuseLocalFile(empty, 0, out _),
+                "0 字节文件不应复用（中断留下的残骸）");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// 「格式化与重建虚拟系统」的拖动分配容量（用户 2026-11-20 要求把 emuMMC 大小下拉框换成拖动）。
+    ///
+    /// 这里测的是**纯换算**：拖动位置 ↔ emuMMC 容量 ↔ 真实分区布局。
+    /// 为什么值得单独测：写反方向不会崩、不会报错，只会「拖起来有点怪」，
+    /// 而真正写进卡里的分区表却是另一套尺寸 —— 卡插回 Switch 才发现 emuMMC 分区不够大。
+    /// </summary>
+    private static void CheckSdResetDrag()
+    {
+        Console.WriteLine();
+        Console.WriteLine("── 格式化与重建虚拟系统：拖动分配容量 ──");
+
+        const long gib = 1073741824L;
+
+        // ① 上限：卡越大能分给 emuMMC 的越多，但不超过 hekate 缩小容量的上界 24 GiB。
+        Assert(SdDragPlan.MaxAllowedGiB(8 * gib) == 5,
+            $"8 GiB 卡最多能分出 5 GiB 的 emuMMC（实际 {SdDragPlan.MaxAllowedGiB(8 * gib)}）");
+        Assert(SdDragPlan.MaxAllowedGiB(16 * gib) == 13,
+            $"16 GiB 卡最多 13 GiB（实际 {SdDragPlan.MaxAllowedGiB(16 * gib)}）");
+        Assert(SdDragPlan.MaxAllowedGiB(32 * gib) == 24,
+            $"32 GiB 及以上封顶 24 GiB（实际 {SdDragPlan.MaxAllowedGiB(32 * gib)}）");
+        Assert(SdDragPlan.MaxAllowedGiB(256 * gib) == 24,
+            $"再大的卡也只到 24 GiB（实际 {SdDragPlan.MaxAllowedGiB(256 * gib)}）");
+
+        // ② 卡太小：6 GiB 放不下「4 GiB emuMMC + 2 GiB 主分区」。
+        Assert(SdDragPlan.MaxAllowedGiB(6 * gib) < SdDragPlan.MinEmuGiB,
+            $"6 GiB 卡应判定为做不了 emuMMC（实际上限 {SdDragPlan.MaxAllowedGiB(6 * gib)} GiB）");
+
+        // ③ 方向：分隔条往右拖 = 主分区变大 = emuMMC 变小。
+        //    这条写反了，界面照样能拖，但分配出来的是镜像尺寸。
+        var disk = 64 * gib;
+        var draggedLeft = SdDragPlan.GiBFromFraction(disk, 0.10);
+        var draggedRight = SdDragPlan.GiBFromFraction(disk, 0.90);
+        Assert(draggedLeft > draggedRight,
+            $"分隔条往左拖应得到更大的 emuMMC（左侧 {draggedLeft} GiB / 右侧 {draggedRight} GiB）");
+
+        // ④ 边界夹取：拖到底也不能把主分区挤到 2 GiB 以下，也不能超过 24 GiB。
+        Assert(SdDragPlan.GiBFromFraction(disk, 1.0) == SdDragPlan.MinEmuGiB,
+            $"拖到最右时 emuMMC 应保持最小 {SdDragPlan.MinEmuGiB} GiB");
+        Assert(SdDragPlan.GiBFromFraction(disk, 0.0) == SdDragPlan.MaxEmuGiB,
+            $"拖到最左时 emuMMC 应封顶 {SdDragPlan.MaxEmuGiB} GiB");
+
+        // ⑤ 往返一致：容量 → 分隔条位置 → 容量，必须回到原值。
+        //    两个方向不是互逆的时候（最容易差在那 32 MiB 的开销上），这条会逐个报出来。
+        var roundTripBroken = new List<string>();
+        for (var size = SdDragPlan.MinEmuGiB; size <= SdDragPlan.MaxEmuGiB; size++)
+        {
+            var fraction = SdDragPlan.FractionForGiB(disk, size);
+            var back = SdDragPlan.GiBFromFraction(disk, fraction);
+            if (back != size)
+            {
+                roundTripBroken.Add($"{size}→{back}");
+            }
+        }
+
+        Assert(roundTripBroken.Count == 0,
+            $"4～24 GiB 每个档位往返换算都应回到原值（不一致：{string.Join("、", roundTripBroken)}）");
+
+        // ⑥ 换算结果必须真的能生成布局：主分区 > 2 GiB、emuMMC 是隐藏类型 240、起点按 32768 扇区对齐。
+        foreach (var size in new[] { 4, 12, 24 })
+        {
+            var layout = SdLayout.Create(disk, new SdFormatOptions(SdFileSystem.Fat32, 1, size));
+            Assert(layout.Partitions.Length == 2,
+                $"{size} GiB：应为「主分区 + 1 个 emuMMC 分区」（实际 {layout.Partitions.Length} 个）");
+            Assert(layout.Main.Length > 2 * gib,
+                $"{size} GiB：主分区仍须大于 2 GiB（实际 {layout.Main.Length / (double)gib:0.00} GiB）");
+            Assert(layout.Partitions[1].Type == SdLayout.HiddenEmuPartitionType,
+                $"{size} GiB：emuMMC 分区类型应为 {SdLayout.HiddenEmuPartitionType}（实际 {layout.Partitions[1].Type}）");
+            Assert(layout.Partitions[1].StartSector % SdLayout.AlignmentSectors == 0,
+                $"{size} GiB：emuMMC 起点应按 {SdLayout.AlignmentSectors} 扇区对齐");
+        }
+
+        // ⑦ 反向护栏：SdLayout 本身不接受 25 GiB —— 说明「夹到 24」必须由拖动那一层保证，
+        //    不能指望布局计算兜底（兜底会抛异常，用户在拖动时就会看到报错）。
+        var rejected = false;
+        try
+        {
+            SdLayout.Create(disk, new SdFormatOptions(SdFileSystem.Fat32, 1, 25));
+        }
+        catch (InvalidDataException)
+        {
+            rejected = true;
+        }
+
+        Assert(rejected, "25 GiB 不是合法档位，SdLayout 应当拒绝（拖动层必须自己夹到 4～24）");
+
+        // ⑧ 仅格式化：没有 emuMMC 分区。
+        var formatOnly = SdLayout.Create(disk, new SdFormatOptions(SdFileSystem.ExFat, 0));
+        Assert(formatOnly.Partitions.Length == 1,
+            $"「仅格式化」应只有一个主分区（实际 {formatOnly.Partitions.Length} 个）");
     }
 
     private static void Assert(bool condition, string message)

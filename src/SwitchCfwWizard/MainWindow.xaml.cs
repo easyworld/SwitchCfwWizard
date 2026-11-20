@@ -3,6 +3,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using SwitchCfwWizard.Localization;
+using SwitchCfwWizard.SdReset;
 using SwitchCfwWizard.ViewModels;
 
 namespace SwitchCfwWizard;
@@ -32,6 +34,49 @@ public partial class MainWindow : Window
             _observedLogs = vm.Logs;
             _observedLogs.CollectionChanged += OnLogsChanged;
         }
+    }
+
+    /// <summary>
+    /// 打开「格式化与重建虚拟系统」。
+    ///
+    /// 前置检查（用户要求④）：主界面下方一个定制选项都没勾时**不进窗口**，直接提醒 ——
+    /// 进了也没东西可装，而这一步之后就是清空整卡。
+    /// 生成进行中同样不许进：那会把同一套下载/输出目录并发写坏（本项目早就踩过并发抢 out/ 的坑）。
+    /// </summary>
+    private void OpenSdReset_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel vm)
+        {
+            return;
+        }
+
+        var loc = LocalizationService.Instance;
+
+        if (vm.IsRunning)
+        {
+            NoticeDialog.Inform(this, loc["SdReset.Title"], loc["SdReset.Notice.Busy"], loc["SdReset.Button.Ok"]);
+            return;
+        }
+
+        // 一个定制选项都没勾：**先问，不直接拒绝**（用户 2026-11-20 要求）。
+        // 继续的话只做分区与格式化，不安装任何内容 —— 这个取舍由调用方通过 installPackage 传下去。
+        var installPackage = true;
+        if (!vm.HasCustomSelection)
+        {
+            installPackage = NoticeDialog.Ask(
+                this,
+                loc["SdReset.Title"],
+                loc["SdReset.Notice.NoSelection"],
+                loc["SdReset.Button.Continue"],
+                loc["SdReset.Button.Cancel"]);
+
+            if (!installPackage)
+            {
+                return;
+            }
+        }
+
+        new SdResetWindow(vm, installPackage) { Owner = this }.ShowDialog();
     }
 
     private void OnLogsChanged(object? sender, NotifyCollectionChangedEventArgs e)

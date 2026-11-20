@@ -283,6 +283,7 @@ public sealed class MainViewModel : ObservableObject, ILogSink
         _blankSerialEmummc = _settings.BlankSerialEmummc;
         _ram8Gb = _settings.Ram8Gb;
         _preferPrerelease = _settings.PreferPrerelease;
+        _preferLocalDownloads = _settings.PreferLocalDownloads;
         _includeComponentFilesInOutput = _settings.IncludeComponentFilesInOutput;
         _includePayloads = _settings.IncludePayloads;
         _includeBootDat = _settings.IncludeBootDat;
@@ -719,6 +720,13 @@ public sealed class MainViewModel : ObservableObject, ILogSink
             return loc["Log.Setting.Mirror"];
         }
 
+        // 「优先使用本地资源」：勾上会改变下载行为（不再联网），日志里要一眼看出是它，
+        // 而不是一行 `PreferLocalDownloads True`。标签直接用界面上那句话，省一个语言键。
+        if (string.Equals(key, nameof(AppSettings.PreferLocalDownloads), StringComparison.Ordinal))
+        {
+            return loc["App.PreferLocalDownloads"];
+        }
+
         // 主题：VM 上的属性叫 SelectedTheme，而存档字段叫 Theme ⇒ 这里用 AppSettings 的名字。
         // ⚠️ 认的是**字段名**而不是属性名，写错的话日志里会退回一串原始键名（不报错）。
         if (string.Equals(key, nameof(AppSettings.Theme), StringComparison.Ordinal))
@@ -1029,6 +1037,7 @@ public sealed class MainViewModel : ObservableObject, ILogSink
 
     private bool _ram8Gb;
     private bool _preferPrerelease;
+    private bool _preferLocalDownloads;
     private bool _includeComponentFilesInOutput;
     private bool _includePayloads = true;
     private bool _includeBootDat;
@@ -1334,6 +1343,19 @@ public sealed class MainViewModel : ObservableObject, ILogSink
     {
         get => _preferPrerelease;
         set => SetProperty(ref _preferPrerelease, value);
+    }
+
+    /// <summary>
+    /// 下载前是否优先复用 download 里已有的文件（主界面「输出内容」里的勾选项，默认关闭）。
+    ///
+    /// 置 true 时，<see cref="RunAsync"/> 的下载循环会先看本地有没有**大小与上游一致**
+    /// 的同名文件。这是**唯一**一份状态：主界面与重置窗口读的都是它，所以
+    /// 哪里勾、哪里生效是一致的。
+    /// </summary>
+    public bool PreferLocalDownloads
+    {
+        get => _preferLocalDownloads;
+        set => SetProperty(ref _preferLocalDownloads, value);
     }
 
     public bool IncludeComponentFilesInOutput
@@ -1954,6 +1976,25 @@ public sealed class MainViewModel : ObservableObject, ILogSink
                             continue;
                         }
 
+                        // 「优先使用本地资源」（用户在重置窗口里勾选，默认不勾）：
+                        // download/ 里已经有**大小与上游一致**的同名文件就不再联网。
+                        // 只认大小一致：半截文件、上一版残留都会被挡掉走正常下载 ——
+                        // 宁可多下一次，也不要拿一个「看着像」的文件装进卡里。
+                        if (PreferLocalDownloads && TryReuseLocalFile(item.DestinationPath, item.Pick.Asset.Size, out var localSize))
+                        {
+                            Log(LogLevel.Info, string.Format(loc["Log.LocalReuse"], item.Pick.FileName, localSize));
+
+                            asset.IsActive = false;
+                            asset.IsDone = true;
+                            asset.Progress = 100;
+                            asset.Status = loc["Common.Done"];
+
+                            componentDone += item.Weight;
+                            doneWeight += item.Weight;
+                            UpdateOverall(0, $"{component.Title} · {loc["Common.Downloading"]}");
+                            continue;
+                        }
+
                         Log(LogLevel.Info, string.Format(loc["Log.DownloadBegin"], $"{item.Repo.DisplayName} → {item.Pick.FileName}"));
 
                         // 打印**实际会请求**的那个地址（走镜像时与直链不同）。
@@ -2172,10 +2213,13 @@ public sealed class MainViewModel : ObservableObject, ILogSink
 
             PackZipCommand.RaiseCanExecuteChanged();
 
-            if (!SuppressShellOpen)
-            {
-                OpenFolder(AppPaths.OutputRoot);
-            }
+            // ── 阶段 4：卡插着吗？插着就问一句要不要顺手复制进去（用户 2026-11-20 要求）──
+            //
+            // ⚠️ 资源管理器**不在这里**打开（2026-11-20 又改了一次）：先探测，再决定。
+            //    以前是无条件先开一次，结果是——选「复制进去」的人白看一个窗口，
+            //    而「没插卡」和「选了暂不复制」这两条路本来都需要它。判定在
+            //    CardCopyPlan.ShouldOpenOutputFolder 里，可以离线穷举。
+            await OfferCardCopyAsync();
         }
         catch (OperationCanceledException)
         {
@@ -2204,6 +2248,98 @@ public sealed class MainViewModel : ObservableObject, ILogSink
             _cts = null;
             OverallIsIndeterminate = false;
         }
+    }
+
+    /// <summary>
+    /// 生成完成之后：先看 TF 卡在不在，再决定**要不要打开输出目录**。
+    ///
+    /// 三条路的结论不一样（用户 2026-11-20 明确要求）：
+    ///   · 检测到卡 + 选「复制进去」→ **不打开**（复制窗口接手，用户不需要自己拖）；
+    ///   · 检测到卡 + 选「暂不复制」→ 打开（让他自己拖进去）；
+    ///   · 没检测到卡（含探测失败 / 有设备但没盘符）→ 打开（不然用户不知道东西生成了）。
+    /// 判定本身是 <see cref="SdReset.CardCopyPlan.ShouldOpenOutputFolder"/>，纯函数，回归能穷举。
+    ///
+    /// 真正的清空与复制在 <see cref="SdReset.CardCopyWindow"/> 里，而且删除前还有一次独立确认 ——
+    /// 清空整张卡这种事，不该由「一次点击」决定。检测失败只记一行日志：这是附加动作，
+    /// 不能让已经生成好的东西看起来像失败。
+    /// </summary>
+    private async Task OfferCardCopyAsync()
+    {
+        if (SuppressShellOpen)
+        {
+            return;
+        }
+
+        var loc = LocalizationService.Instance;
+
+        List<SdReset.SdDevice> devices;
+        try
+        {
+            devices = await Task.Run(SdReset.SdDisks.Scan);
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Info, "[复制] 检测 TF 卡失败（不影响本次生成）：" + NetworkErrors.Describe(ex));
+            devices = new List<SdReset.SdDevice>();
+        }
+
+        // 没有盘符的设备没法写文件，问一句也只会让人白高兴 —— 只挑可写的。
+        var usable = devices.Where(device => device.MountPoints.Length > 0).ToList();
+
+        if (usable.Count == 0)
+        {
+            Log(LogLevel.Info, devices.Count == 0
+                ? "[复制] 未检测到已插入的 TF 卡，跳过复制提示。"
+                : $"[复制] 检测到 {devices.Count} 个设备但都没有盘符，无法写入，跳过复制提示。");
+
+            if (OpenIfWanted(cardUsable: false, userChoseCopy: false))
+            {
+                Log(LogLevel.Info, "[复制] 已打开输出目录，可手动复制。");
+            }
+
+            return;
+        }
+
+        Log(LogLevel.Info, "[复制] 检测到：" + string.Join(" | ", usable.Select(device => device.Display)));
+
+        var owner = System.Windows.Application.Current?.MainWindow;
+        var body = string.Format(loc["CardCopy.Ask.Body"], usable[0].Display);
+
+        if (!SdReset.NoticeDialog.Ask(
+                owner, loc["CardCopy.Ask.Title"], body, loc["CardCopy.Ask.Yes"], loc["CardCopy.Ask.No"]))
+        {
+            Log(LogLevel.Info, "[复制] 用户选择暂不复制。");
+
+            if (OpenIfWanted(cardUsable: true, userChoseCopy: false))
+            {
+                Log(LogLevel.Info, "[复制] 已打开输出目录，可手动复制。");
+            }
+
+            return;
+        }
+
+        // 复制进去：复制窗口自己会显示进度与结果，这里**不再**弹资源管理器。
+        // 日志跟着实际动作写（开没开由判定给出），不让「日志说开了」和「屏幕上没有」各说一套。
+        var opened = OpenIfWanted(cardUsable: true, userChoseCopy: true);
+        Log(LogLevel.Info, "[复制] 已选择复制进去，打开复制窗口。"
+            + (opened ? "（同时打开了输出目录）" : "（不弹资源管理器）"));
+
+        new SdReset.CardCopyWindow(this) { Owner = owner }.ShowDialog();
+    }
+
+    /// <summary>
+    /// 按 <see cref="SdReset.CardCopyPlan.ShouldOpenOutputFolder"/> 决定要不要打开输出目录。
+    /// 返回值就是「开了没有」，方便调用方写日志 —— 别让日志和实际动作各说一套。
+    /// </summary>
+    private bool OpenIfWanted(bool cardUsable, bool userChoseCopy)
+    {
+        if (!SdReset.CardCopyPlan.ShouldOpenOutputFolder(cardUsable, userChoseCopy))
+        {
+            return false;
+        }
+
+        OpenFolder(AppPaths.OutputRoot);
+        return true;
     }
 
     private async Task<ComponentJob> ResolveComponentAsync(ComponentViewModel component, WizardOptions options, CancellationToken token)
@@ -2849,6 +2985,7 @@ public sealed class MainViewModel : ObservableObject, ILogSink
         target.Proxy = string.IsNullOrWhiteSpace(Proxy) ? null : Proxy.Trim();
         target.Mirror = string.IsNullOrWhiteSpace(Mirror) ? null : Mirror.Trim();
         target.PreferPrerelease = PreferPrerelease;
+        target.PreferLocalDownloads = PreferLocalDownloads;
         target.IncludeComponentFilesInOutput = IncludeComponentFilesInOutput;
         target.IncludePayloads = IncludePayloads;
         target.IncludeBootDat = IncludeBootDat;
@@ -3597,6 +3734,75 @@ public sealed class MainViewModel : ObservableObject, ILogSink
 
     /// <summary>直接执行一次完整流程（解析 → 下载 → 解压 → 生成配置）。</summary>
     public Task RunOnceAsync() => RunAsync();
+
+    // ── 「格式化与重建虚拟系统」的两处接缝 ──────────────────────
+
+    /// <summary>
+    /// 主界面下方是否至少勾选了一个定制选项 —— 打开重置窗口前的前置检查。
+    /// 看的是 Components 的勾选状态，不是 <c>BuildWizardOptions()</c>：后者还要读一堆设置，
+    /// 而这里只回答一个问题「有没有东西可以装」。
+    /// </summary>
+    internal bool HasCustomSelection => Components.Any(c => c.IsSelected);
+
+    /// <summary>
+    /// 本地文件能否直接当下载结果用。
+    ///
+    /// 判据只有三条：文件在、非空、**大小与上游一致**（上游没给大小时不校验）。
+    /// 不用「扩展名对得上」或「看着像」—— 半截文件、上一版的残留都长得一模一样，
+    /// 而它们真正的区别只有字节数；装进卡里之后才炸是最坏的结果。
+    /// </summary>
+    internal static bool TryReuseLocalFile(string path, long expectedSize, out long size)
+    {
+        size = 0;
+
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return false;
+        }
+
+        var length = new FileInfo(path).Length;
+        if (length <= 0)
+        {
+            return false;
+        }
+
+        if (expectedSize > 0 && length != expectedSize)
+        {
+            return false;
+        }
+
+        size = length;
+        return true;
+    }
+
+    /// <summary>
+    /// 按当前勾选的定制选项生成一份「整合包」（写进 <see cref="AppPaths.OutputRoot"/>），
+    /// 供「格式化与重建虚拟系统」装进 TF 卡。
+    ///
+    /// 复用**同一条**生成管线，不另写一套 —— 否则「主界面生成的内容」和「真正装进卡里的内容」
+    /// 迟早会不一致，而这种不一致在卡插回 Switch 之前看不出来。
+    /// 期间不打包 zip、不弹资源管理器；进度由调用方读 <see cref="OverallStatus"/>/<see cref="OverallProgress"/>。
+    ///
+    /// 返回值 = 产物里有没有 <c>payload.bin</c>（重建虚拟系统要求它是可直接启动的 hekate）。
+    /// </summary>
+    internal async Task<bool> GeneratePackageForSdResetAsync()
+    {
+        var autoPack = AutoPackZip;
+        var suppress = SuppressShellOpen;
+        AutoPackZip = false;
+        SuppressShellOpen = true;
+        try
+        {
+            await RunAsync();
+        }
+        finally
+        {
+            AutoPackZip = autoPack;
+            SuppressShellOpen = suppress;
+        }
+
+        return File.Exists(Path.Combine(AppPaths.OutputRoot, "payload.bin"));
+    }
 
     /// <summary>
     /// 如果 settings.json 里从来没有任何组件的勾选记录（首次运行），就默认全选。

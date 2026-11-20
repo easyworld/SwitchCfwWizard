@@ -43,6 +43,17 @@ public sealed class AppSettings
     public bool PreferPrerelease { get; set; } = true;
 
     /// <summary>
+    /// 下载前是否优先复用 download 目录里已有的文件（「全局选项 → 输出内容」里的勾选项，
+    /// **默认关闭**）。
+    ///
+    /// 这是**唯一**的开关：主界面的生成流程与「格式化与重建虚拟系统」共用它。
+    /// 以前那个勾选框长在重置窗口里、每次准备时写进视图模型、关窗再写回 false ——
+    /// 结果就是「用户在主界面勾了也不算数，每次都要重新勾」，而且改完还会被清掉。
+    /// 默认关闭的理由：拿本地旧文件顶替真正的下载，出问题时最难查。
+    /// </summary>
+    public bool PreferLocalDownloads { get; set; }
+
+    /// <summary>
     /// 是否把解压好的组件本体一并合并进 out。
     ///
     /// **默认开启**：不合并的话 out/ 里只有配置文件和 payload，拷进 SD 卡**根本起不来机**

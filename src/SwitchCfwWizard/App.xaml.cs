@@ -5,7 +5,9 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using SwitchCfwWizard.Infrastructure;
+using SwitchCfwWizard.Localization;
 using SwitchCfwWizard.Models;
+using SwitchCfwWizard.SdReset;
 using SwitchCfwWizard.Services;
 using SwitchCfwWizard.ViewModels;
 
@@ -39,6 +41,18 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // 「格式化与重建虚拟系统」的提权辅助进程：主进程用 runas 再起一个自己，
+        // 由它独占打开物理磁盘并调用原生格式化组件。
+        //
+        // ⚠️ 必须在**创建任何窗口之前**处理：否则会先弹出主界面再退出，用户会看到窗口闪一下。
+        //    参数形状由 SdResetWorker 自己校验（管道名 + 父进程号），这里只做转发。
+        if (e.Args.Length == 3
+            && string.Equals(e.Args[0], "--sd-reset-worker", StringComparison.OrdinalIgnoreCase))
+        {
+            Shutdown(SdResetWorker.Run(e.Args));
+            return;
+        }
 
         IsSelfTest = e.Args.Any(a => string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase));
         IsHeadlessRun = e.Args.Any(a => string.Equals(a, "--run", StringComparison.OrdinalIgnoreCase));
@@ -982,7 +996,22 @@ public partial class App : Application
 
                 // 先把「检查更新的地址」那个框滚进视野：它在右列的滚动区里，不滚就落在窗口外面，
                 // 出图只能看到上半段（第一版就是这样，白出一次）。
-                BoxFor(ShotFocus ?? nameof(MainViewModel.UpdateUrl))?.BringIntoView();
+                // `--shot-focus` 也可以指一个**勾选框**（不是所有要确认的控件都是 TextBox）：
+                // 先按 TextBox 找，找不到再按 CheckBox 的绑定路径找。
+                System.Windows.FrameworkElement? shotFocusElement =
+                    BoxFor(ShotFocus ?? nameof(MainViewModel.UpdateUrl));
+
+                if (shotFocusElement is null && ShotFocus is not null)
+                {
+                    var focusChecks = new List<System.Windows.Controls.CheckBox>();
+                    Collect(window, focusChecks);
+                    shotFocusElement = focusChecks.FirstOrDefault(c =>
+                        System.Windows.Data.BindingOperations
+                            .GetBinding(c, System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)
+                            ?.Path?.Path == ShotFocus);
+                }
+
+                shotFocusElement?.BringIntoView();
 
                 // boot.dat 那张卡片同理在**左列**的滚动区里 —— 也要滚到它那儿，否则「卡片上那行文字」
                 // 根本不在图上（每一轮要改的往往正是卡片里的东西）。两列各有各的滚动条，所以
@@ -1016,6 +1045,320 @@ public partial class App : Application
             {
                 themeProblems.Add("出图失败：" + ex.Message);
             }
+        }
+
+        // ── 「格式化与重建虚拟系统」：入口按钮 + 窗口能否构造 ───────────────
+        // 这个窗口平时**自检根本碰不到**（只有点了按钮才构造）。XAML 里写错一个 StaticResource
+        // 键、或把某个控件挪走，自检照样全绿 —— 直到用户点下去才崩。所以这里显式构造一次。
+        try
+        {
+            var sdLoc = LocalizationService.Instance;
+            var openLabel = sdLoc["SdReset.Button.Open"];
+
+            var buttons = new List<System.Windows.Controls.Button>();
+            Collect(window, buttons);
+
+            var openButton = buttons.FirstOrDefault(
+                b => string.Equals(b.Content as string, openLabel, StringComparison.Ordinal));
+
+            var probe = new SdResetWindow((MainViewModel)window.DataContext);
+
+            var required = new[]
+            {
+                "DevicePicker", "LayoutBarHost", "MainSizeText", "EmuSizeText", "ConfirmPanel", "ResultPanel",
+            };
+            var missing = required.Where(n => probe.FindName(n) is null).ToList();
+
+            // 用户要求「移除 emuMMC 大小文本和下拉框」：这两个名字不该再出现。
+            // 用**名字**断言，而不是「看着像」—— 否则哪天有人换个名字把下拉框加回来也发现不了。
+            var obsolete = new[] { "SizePicker", "SizePanel" }.Where(n => probe.FindName(n) is not null).ToList();
+
+            report.AppendLine(
+                $"SELFTEST: sdreset entry={(openButton is null ? "missing" : "ok")} "
+                + $"window={(missing.Count == 0 ? "ok" : "missing:" + string.Join(",", missing))} "
+                + $"obsolete-size-controls={obsolete.Count}");
+
+            if (openButton is null)
+            {
+                themeProblems.Add($"没找到「{openLabel}」按钮（应放在界面语言左侧）");
+            }
+
+            if (missing.Count > 0)
+            {
+                themeProblems.Add("重置窗口缺少控件：" + string.Join("、", missing));
+            }
+
+            if (obsolete.Count > 0)
+            {
+                themeProblems.Add("重置窗口里又出现了应被移除的容量控件：" + string.Join("、", obsolete));
+            }
+
+            // 有设备时，布局条必须真的画出**两块非零宽度**的色块。
+            // 这一条防的是「拖动条只是个空 Canvas」：那种状态下编译、绑定、自检都不会报错，
+            // 用户看到的是「重建后的布局」下面什么都没有，也没法拖。
+            // 用一个合成设备（USB 总线、512 字节扇区、64 GiB）驱动 UpdatePreview，
+            // 只走「算布局 + 画面」这一段，不碰任何真实磁盘。
+            var fake = new SdDevice(
+                99, "Selftest", "Card", "SN", 7, 64L * 1024 * 1024 * 1024, 512,
+                "selftest-identity", "selftest-layout", new[] { "E:\\" }, false, string.Empty);
+            var fake2 = fake with { Number = 98, Identity = "selftest-identity-2" };
+
+            // 走**生产路径**绑定设备：BindDevices 里就包含「默认选中第一个」。
+            probe.BindDevices(new[] { fake, fake2 });
+
+            var selected = probe.DevicePicker.SelectedItem as SdDevice;
+            report.AppendLine(
+                $"SELFTEST: sdreset-picker selected={selected?.Number.ToString() ?? "none"} "
+                + $"items={probe.DevicePicker.Items.Count} display-path={probe.DevicePicker.DisplayMemberPath}");
+
+            if (selected?.Number != 99)
+            {
+                themeProblems.Add("设备下拉框应默认选中第一张卡（用户要求「优先展示第一张 TF 卡」）");
+            }
+
+            if (!string.Equals(probe.DevicePicker.DisplayMemberPath, "Display", StringComparison.Ordinal))
+            {
+                themeProblems.Add("设备下拉框必须用 DisplayMemberPath 显示文字，否则收起时是一个空框");
+            }
+
+            // ⚠️ 不能只对 Window 调 Measure：**没显示过的窗口 ActualWidth 恒为 0**，
+            //    布局条会因此提前 return、一块都不画（第一版就是这样，判据当场报 main=0 emu=0）。
+            //    直接给布局条一个确定宽度做测量+排布，量到的就是真实绘制尺寸。
+            probe.LayoutBarHost.Measure(new System.Windows.Size(600, 34));
+            probe.LayoutBarHost.Arrange(new System.Windows.Rect(0, 0, 600, 34));
+            probe.UpdateLayout();
+
+            report.AppendLine($"SELFTEST: sdreset-bar main={probe.MainBlock.Width:0.#} emu={probe.EmuBlock.Width:0.#}");
+
+            if (!(probe.MainBlock.Width > 0) || !(probe.EmuBlock.Width > 0))
+            {
+                themeProblems.Add(
+                    $"重置窗口的布局条没有画出两块色块（主 {probe.MainBlock.Width:0.#} / emu {probe.EmuBlock.Width:0.#}）");
+            }
+            else
+            {
+                // 两块必须**铺满**整条：只画出一块、或按比例算错（少算/多算一段），
+                // 都会让「拖动条长度」与「实际容量」对不上 —— 拖到哪都分不出正确大小。
+                var total = probe.MainBlock.Width + probe.EmuBlock.Width;
+                if (Math.Abs(total - 600) > 1)
+                {
+                    themeProblems.Add($"布局条两块色块合计应铺满 600（实际 {total:0.#}）");
+                }
+            }
+
+            // 拖动：调用 Thumb 的 DragDelta 最终会走的那个方法。
+            // ⚠️ 这一条防的是「方块完全拖不动」—— 原先它读 `_device`，而那个字段只在
+            //    「下一步」里赋值，所以在①分区设置里拖动时永远是 null、直接 return，且没有报错。
+            var beforeDrag = probe.MainSizeText.Text;
+            var movedRight = probe.ApplyDragFraction(0.95);
+            var afterRight = probe.MainSizeText.Text;
+            var movedLeft = probe.ApplyDragFraction(0.05);
+            var afterLeft = probe.MainSizeText.Text;
+
+            report.AppendLine(
+                $"SELFTEST: sdreset-drag {beforeDrag} -> right:{afterRight} -> left:{afterLeft} "
+                + $"moved={movedRight}/{movedLeft}");
+
+            if (!movedRight || !movedLeft || afterRight == beforeDrag || afterLeft == afterRight)
+            {
+                themeProblems.Add("拖动分隔条没有改变容量（主分区大小应随拖动变化）");
+            }
+
+            // 提示弹窗也是新窗口：不构造一次，XAML 里写错资源键只有用户点到才会炸。
+            var notice = new NoticeDialog();
+            var noticeOk = notice.Heading is not null && notice.Body is not null
+                           && notice.PrimaryButton is not null && notice.CancelButton is not null;
+            report.AppendLine($"SELFTEST: sdreset-notice={(noticeOk ? "ok" : "missing")}");
+            if (!noticeOk)
+            {
+                themeProblems.Add("提示弹窗缺少必要元素（标题/正文/按钮）");
+            }
+
+            // 「优先使用本地资源」只有一个开关，长在「全局选项 → 输出内容」里（用户 2026-11-20）。
+            // 重置窗口里**不许**再有第二个：两份状态必然有一份说了不算 —— 上一轮就是窗口自己那份
+            // 每次准备时覆盖主界面的值，准备结束又写回 false。
+            string? TogglePath(System.Windows.Controls.CheckBox box)
+                => System.Windows.Data.BindingOperations
+                    .GetBinding(box, System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)
+                    ?.Path?.Path;
+
+            var hostChecks = new List<System.Windows.Controls.CheckBox>();
+            Collect(window, hostChecks);
+            var hostPreferLocal = hostChecks.FirstOrDefault(
+                b => TogglePath(b) == nameof(SwitchCfwWizard.ViewModels.MainViewModel.PreferLocalDownloads));
+
+            // ⚠️ 未显示过的 Window 自己**没有视觉子级**（要等 HwndSource 建出来）；
+            //    连它的 Content 量了/排了也建不出子树（实测：Collect 恒为 0）。
+            //    那样下面那条 absent 就是**假绿** —— 「扫不到」和「确实没有」看起来一样。
+            //    所以这里走**逻辑树**：XAML 声明的对象在 InitializeComponent 之后就已经存在，
+            //    与有没有渲染过无关。
+            var resetChecks = new List<System.Windows.Controls.CheckBox>();
+            void WalkLogical(DependencyObject root)
+            {
+                foreach (var child in System.Windows.LogicalTreeHelper.GetChildren(root))
+                {
+                    if (child is System.Windows.Controls.CheckBox box)
+                    {
+                        resetChecks.Add(box);
+                    }
+
+                    if (child is DependencyObject node)
+                    {
+                        WalkLogical(node);
+                    }
+                }
+            }
+
+            WalkLogical(probe);
+            var resetPreferLocal = resetChecks.Any(
+                b => TogglePath(b) == nameof(SwitchCfwWizard.ViewModels.MainViewModel.PreferLocalDownloads));
+
+            report.AppendLine(
+                $"SELFTEST: prefer-local main="
+                + $"{(hostPreferLocal is null ? "missing" : hostPreferLocal.IsChecked == true ? "on" : "off")}"
+                + $" reset={(resetPreferLocal ? "duplicated" : "absent")}");
+
+            if (hostPreferLocal is null)
+            {
+                themeProblems.Add("主界面「输出内容」里找不到「优先使用本地资源」勾选框");
+            }
+            else if (hostPreferLocal.IsChecked == true)
+            {
+                themeProblems.Add("「优先使用本地资源」默认应为未勾选（勾上会跳过下载、拿本地旧文件装上卡）");
+            }
+
+            // 「没扫到」和「扫到了、但没有那一个」是两件事：前者说明视觉树没建起来，
+            // 此时 absent 是**假绿**。所以先要求重置窗口里至少有一个勾选框（知晓那一个）。
+            if (resetChecks.Count == 0)
+            {
+                themeProblems.Add("判据失效：重置窗口里一个勾选框都没扫到（视觉树没建起来，absent 不可信）");
+            }
+            else if (resetPreferLocal)
+            {
+                themeProblems.Add("重置窗口里又出现了「优先使用本地资源」勾选框（现在只保留主界面那一处）");
+            }
+
+            // 「复制进 TF 卡」窗口同样是新 XAML：不构造一次，写错的资源键/语言键只有用户点到才炸。
+            // 注意这里**不 Show**，所以它的 Loaded（枚举真实设备）不会跑 —— 自检不该碰用户的卡。
+            try
+            {
+                var cardCopy = new SwitchCfwWizard.SdReset.CardCopyWindow((MainViewModel)window.DataContext);
+
+                var pickerOk = cardCopy.DevicePicker is not null
+                               && string.Equals(cardCopy.DevicePicker.DisplayMemberPath, "Display", StringComparison.Ordinal);
+                var keepCount = SwitchCfwWizard.SdReset.CardCopyPlan.KeepNames.Length;
+
+                // 「不删除卡上的文件与文件夹，直接复制」：默认必须**不勾**（勾上是另一条路径，
+                // 会保留旧整合包的残留文件）。窗口里真有这个勾选框，也一并查出来。
+                var skipBox = cardCopy.SkipClearCheck;
+                var skipOk = skipBox is not null && skipBox.IsChecked != true;
+
+                // 右下角那个按钮一开始必须是「清空并复制」。它复制完会变成「弹出 TF 卡」，
+                // 但**初始态**要是就写着弹出，等于一进来就让人把卡拔了。
+                var startLabel = cardCopy.StartButton?.Content as string;
+                var copyLabel = SwitchCfwWizard.Localization.LocalizationService
+                    .Instance["CardCopy.Button.Copy"];
+                var startOk = string.Equals(startLabel, copyLabel, StringComparison.Ordinal);
+
+                // 「复制完成后按钮变成弹出 TF 卡」这件事也验一遍：
+                // 不跑完一次真实复制（那要写卡），只把那个状态位翻上去，再问按钮现在是什么。
+                // 判据是**文案与样式同时换**——只换文案会留下一个看起来像主操作的「弹出」按钮。
+                var ejectLabel = SwitchCfwWizard.Localization.LocalizationService
+                    .Instance["CardCopy.Button.Eject"];
+                var copiedField = typeof(SwitchCfwWizard.SdReset.CardCopyWindow)
+                    .GetField("_copied", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var applyButton = typeof(SwitchCfwWizard.SdReset.CardCopyWindow)
+                    .GetMethod("ApplyStartButton", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+                var ejectOk = false;
+                if (copiedField is not null && applyButton is not null)
+                {
+                    copiedField.SetValue(cardCopy, true);
+                    applyButton.Invoke(cardCopy, null);
+
+                    ejectOk = string.Equals(cardCopy.StartButton?.Content as string, ejectLabel, StringComparison.Ordinal)
+                              && cardCopy.StartButton?.Style?.Equals(cardCopy.FindResource("SecondaryButton")) == true;
+
+                    // 复原：截图与后面的检查看到的仍应是「还没复制」的样子
+                    copiedField.SetValue(cardCopy, false);
+                    applyButton.Invoke(cardCopy, null);
+                }
+
+                report.AppendLine(
+                    $"SELFTEST: cardcopy window=ok keep={keepCount} picker={(pickerOk ? "Display" : "bad")}"
+                    + $" skip={(skipBox is null ? "missing" : skipOk ? "off" : "on")}"
+                    + $" button={(startOk ? "copy" : "bad:" + startLabel)}"
+                    + $" eject={(ejectOk ? "ok" : "bad")}");
+
+                // 这个窗口也想看一眼：`Render(window)` 对没显示过的窗口画不出东西（没有 HwndSource），
+                // 所以渲染它的 **Content**（普通 FrameworkElement，量过就有子树）。
+                if (ShotPath is not null && cardCopy.Content is System.Windows.FrameworkElement cardRoot)
+                {
+                    cardRoot.Measure(new System.Windows.Size(820, 740));
+                    cardRoot.Arrange(new System.Windows.Rect(0, 0, 820, 740));
+                    cardRoot.UpdateLayout();
+
+                    var cardShot = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                        820, 740, 96, 96, PixelFormats.Pbgra32);
+                    cardShot.Render(cardRoot);
+
+                    var cardEncoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    cardEncoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(cardShot));
+
+                    var cardPath = System.IO.Path.Combine(
+                        System.IO.Path.GetDirectoryName(ShotPath)!, "cardcopy.png");
+
+                    using (var stream = File.Create(cardPath))
+                    {
+                        cardEncoder.Save(stream);
+                    }
+
+                    report.AppendLine($"SELFTEST: cardcopy-shot {cardPath}");
+                }
+
+                if (!pickerOk)
+                {
+                    themeProblems.Add("复制窗口的设备下拉没有按 Display 绑定（收起后会显示类型名，与重置窗口那次同一个坑）");
+                }
+
+                if (keepCount != 3)
+                {
+                    themeProblems.Add($"复制窗口的保留目录应恰好 3 个（实际 {keepCount}）");
+                }
+
+                if (skipBox is null)
+                {
+                    themeProblems.Add("复制窗口里找不到「不删除卡上的文件与文件夹，直接复制」勾选框");
+                }
+                else if (!skipOk)
+                {
+                    themeProblems.Add("「不删除，直接复制」默认应为未勾选（推荐路径是只保留三个文件夹）");
+                }
+
+                if (!startOk)
+                {
+                    themeProblems.Add($"复制窗口的右下角按钮初始应显示「清空并复制」，实际是「{startLabel}」"
+                        + "（它只在复制成功后才变成「弹出 TF 卡」）");
+                }
+
+                if (copiedField is null || applyButton is null)
+                {
+                    themeProblems.Add("判据失效：复制窗口里找不到 _copied / ApplyStartButton（反射锚点被改名了）");
+                }
+                else if (!ejectOk)
+                {
+                    themeProblems.Add("复制完成后右下角按钮没有变成「弹出 TF 卡」（或没降成次要样式）");
+                }
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine("SELFTEST: cardcopy window=missing");
+                themeProblems.Add("复制窗口无法构造：" + ex.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            themeProblems.Add("重置窗口无法构造：" + ex.Message);
         }
 
         // 复原用户自己的档位（体检是借这一趟跑，不该留在别人身上）

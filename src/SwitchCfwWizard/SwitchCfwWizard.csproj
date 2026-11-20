@@ -5,6 +5,15 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
+    <!--
+      可空性警告**不许退化成普通警告**（2026-11-20）。
+      移植层（SdReset/）攒过 30 处 CS8600/CS8604 —— 全是「可能为 null 的值塞进非空变量/参数」，
+      运行时就是 NullReferenceException 的候选；而构建一直是绿的，只在日志里留一行 warning。
+      清零之后把它们升级为错误：下次谁写错第一步就被拦住，而不是等它在写盘流程里炸。
+      ⚠️ 只升级 nullable 这一组：NuGet / SDK 弃用等其它警告仍按默认策略，
+         免得一次 SDK 升级把整个构建拦死。
+    -->
+    <WarningsAsErrors>nullable</WarningsAsErrors>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>12.0</LangVersion>
     <RootNamespace>SwitchCfwWizard</RootNamespace>
@@ -12,7 +21,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyTitle>Switch CFW Wizard</AssemblyTitle>
     <Product>Switch CFW Wizard</Product>
-    <Version>0.1.3</Version>
+    <Version>0.2.0</Version>
     <FileVersion>0.1.0.0</FileVersion>
     <NeutralLanguage>zh-Hans</NeutralLanguage>
     <DebugType>embedded</DebugType>
@@ -73,6 +82,36 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>ConfigSmokeTest</_Parameter1>
     </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      「格式化与重建虚拟系统」用的原生组件（fatfs 格式化核心，x64，导出 ns_format）。
+      ⚠️ 它同时以 **Content + EmbeddedResource** 两种方式收进来：
+        · Content → 普通构建/多文件发布时就在 exe 旁边，直接 NativeLibrary.Load；
+        · 内嵌副本 → **单文件发布时目录里只有 exe**，运行期释放到临时目录再加载
+          （见 SdReset/NativeFormatter.cs）。只做一半的话，单文件版会在点「下一步」时
+          报「找不到 NsToolbox.Formatter.dll」—— 而且编译、发布都不报错。
+    -->
+    <!--
+      ⚠️ Content 那份要带 Condition：**单文件发布时不能复制**。
+         否则单文件产物旁边会多出这个 dll，`build.sh` 的形态体检（根目录必须恰好 1 个文件）直接失败 ——
+         而失败信息看着像「参数写错了」，其实只是多了一个随行文件。
+         单文件场景由内嵌副本释放到临时目录（见 SdReset/NativeFormatter.cs）。
+    -->
+    <!--
+      ⚠️ `Link` 不能省：Content 默认**保留源相对路径**，dll 会落到 `out/SdReset/Native/` 而不是 exe 旁边。
+         NativeFormatter 只认 exe 同级，于是永远走「内嵌释放到临时目录」那条兜底 —— 程序照样能跑、
+         自检照样全绿，但产物里多出一层没人用的目录，而「随程序发布的原生组件」实际上没被用上。
+    -->
+    <Content Include="SdReset\Native\NsToolbox.Formatter.dll"
+             Link="NsToolbox.Formatter.dll"
+             CopyToOutputDirectory="PreserveNewest"
+             Condition="'$(PublishSingleFile)' != 'true'" />
+    <EmbeddedResource Include="SdReset\Native\NsToolbox.Formatter.dll" LogicalName="SwitchCfwWizard.Native.NsToolbox.Formatter.dll" />
+
+    <!-- 自动创建 emuMMC 用的 hekate 自动化载荷（含 GPL 源码 source.zip）。 -->
+    <EmbeddedResource Include="SdReset\Assets\NsToolbox.AutoEmu.zip" LogicalName="NsToolbox.AutoEmu.zip" />
   </ItemGroup>
 
 </Project>

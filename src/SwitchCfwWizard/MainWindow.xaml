@@ -283,6 +283,15 @@
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <!-- 「格式化与重建虚拟系统」放在界面语言的**左侧**（用户 2026-11-20 指定）。
+                     它是入口按钮而不是偏好设置，所以用次要按钮样式、不抢语言的视线。 -->
+                <Button Content="{loc:Loc SdReset.Button.Open}"
+                        Style="{StaticResource SecondaryButton}"
+                        Padding="8,4"
+                        VerticalAlignment="Center"
+                        Margin="0,0,14,0"
+                        Click="OpenSdReset_Click" />
+
                 <TextBlock Text="{loc:Loc App.Language}"
                            Style="{StaticResource CaptionText}"
                            VerticalAlignment="Center"
@@ -764,6 +773,14 @@
                             <CheckBox Content="{loc:Loc Global.PreferPreRelease}"
                                       IsChecked="{Binding PreferPrerelease}" />
                             <TextBlock Text="{loc:Loc Global.PreferPreRelease.Desc}"
+                                       Style="{StaticResource HintText}"
+                                       Margin="22,1,0,10" />
+
+                            <!-- 用户 2026-11-20：这个开关是全局行为，放在这里；
+                                 主界面生成与「格式化与重建虚拟系统」共用它。 -->
+                            <CheckBox Content="{loc:Loc App.PreferLocalDownloads}"
+                                      IsChecked="{Binding PreferLocalDownloads}" />
+                            <TextBlock Text="{loc:Loc App.PreferLocalDownloads.Desc}"
                                        Style="{StaticResource HintText}"
                                        Margin="22,1,0,0" />
 

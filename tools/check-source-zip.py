@@ -40,6 +40,10 @@ SKIP_DIRS = {
 SKIP_FILE_NAMES = {"settings.json", "Thumbs.db", ".DS_Store", "desktop.ini"}
 SKIP_EXTENSIONS = {".log", ".user", ".suo", ".pdb", ".cache", ".tmp"}
 
+# 与 ps1 里的 $SkipDirPattern 对应：拦「带后缀的同族目录」（dist.stale-1120-132907 等）。
+# 少了它，本脚本会认为磁盘上那 900 多个运行时 dll「包里有、包里没有」而误报不通过。
+SKIP_DIR_PATTERN = re.compile(r"^(bin|obj|dist|publish|out|download|logs)([.\-_].*)?$", re.I)
+
 MUST_HAVE = [
     "_SOURCE-INFO.txt",
     "README.md",
@@ -91,7 +95,7 @@ def walk_expected(root):
             full = os.path.join(cur, name)
             rel = os.path.relpath(full, root)
             if os.path.isdir(full):
-                if name in SKIP_DIRS:
+                if name in SKIP_DIRS or SKIP_DIR_PATTERN.match(name):
                     continue
                 stack.append(full)
                 continue
@@ -133,6 +137,13 @@ def main():
             hit = [n for n in entries if bad in "/" + n]
             if hit:
                 problems.append(f"不该出现 {bad}（{len(hit)} 项，例如 {hit[0]}）")
+
+        # 上一条是字符串包含，拦不住 `dist.stale-1120-132907/` 这种同族目录（"/dist/" 不在里面）。
+        # 这里按**目录段**再查一遍，规则与打包脚本的 $SkipDirPattern 同一套。
+        stray = [n for n in entries
+                 if any(p in SKIP_DIRS or SKIP_DIR_PATTERN.match(p) for p in n.split("/")[:-1])]
+        if stray:
+            problems.append(f"包里混进了构建/发布目录（{len(stray)} 项，例如 {stray[0]}）")
 
         # ③ 清单自洽
         manifest_name = f"{want_top}/_SOURCE-INFO.txt"
